@@ -1,0 +1,7 @@
+{
+  "name": "QuantomWiFi - Multi-Tenant WiFi Card System",
+  "description": "A high-end, multi-tenant WiFi card selling platform with automated points system, agent management, and RTL Arabic support.",
+  "requestFramePermissions": [
+    "microphone"
+  ]
+}
