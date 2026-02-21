@@ -31,6 +31,7 @@ export interface User {
   isActive: boolean;
   status?: 'ACTIVE' | 'PENDING' | 'SUSPENDED';
   createdAt: string;
+  favorites?: string[]; // Array of Agent IDs
 }
 
 export interface AgentBankDetails {
@@ -132,6 +133,83 @@ export interface BankAccount {
   accountNumber: string;
   accountHolder: string;
   isActive: boolean;
+}
+
+export interface AgentVisibleTabs {
+  stats: boolean;      // الرئيسية
+  categories: boolean; // إدارة الفئات
+  archive: boolean;    // الأرشيف
+  sales: boolean;      // المبيعات
+  settlements: boolean; // التسويات
+  settings: boolean;   // الإعدادات
+}
+
+export interface TabConfig {
+  id: string;
+  label: string;
+  icon: string;
+  enabled: boolean;
+}
+
+export type ContentType = 'text' | 'html' | 'table' | 'cards' | 'stats' | 'builtin' | 'user_summary' | 'full_transactions' | 'purchases_only' | 'deposits_only' | 'networks_summary' | 'recent_activities' | 'dashboard' | 'user_wallet' | 'transactions_list' | 'purchased_cards' | 'favorite_networks' | 'notifications' | 'support' | 'reports';
+
+export interface DynamicTab {
+  id: string;               // معرف فريد (مثل 'tab_1623456789')
+  label: string;            // اسم التبويب
+  icon: string;             // أيقونة (إيموجي أو نص)
+  contentType: ContentType; // نوع المحتوى
+  content: any;             // المحتوى حسب النوع (نص، HTML، مصفوفة، الخ)
+  enabled: boolean;
+  order: number;            // الترتيب
+}
+
+export interface AgentTabsConfig {
+  tabs: TabConfig[];
+}
+
+export interface UserTabsConfig {
+  tabs: DynamicTab[];
+}
+
+export interface ActionButton {
+  id: string;
+  label: string;
+  icon?: string;
+  actionType: 'openModal' | 'navigate' | 'export' | 'custom';
+  actionData?: any; // e.g., { modal: 'points' }, { tab: 'transactions' }
+}
+
+export interface SubTab {
+  id: string;
+  label: string;
+  icon?: string;
+  contentType: ContentType;
+  content?: any;
+  buttons?: ActionButton[];
+  enabled: boolean;
+  order: number;
+}
+
+export interface MainSection {
+  id: string;
+  label: string;
+  icon: string;
+  subTabs: SubTab[];
+  enabled: boolean;
+  order: number;
+}
+
+export interface UserDashboardLayout {
+  sections: MainSection[];
+}
+
+export interface SystemSettings {
+  maintenance: boolean;
+  announcement: string;
+  agentTabs: AgentTabsConfig;
+  userTabs: UserTabsConfig;
+  dashboardLayout?: UserDashboardLayout;
+  agentVisibleTabs?: AgentVisibleTabs;
 }
 
 export interface MikroTikConfig {

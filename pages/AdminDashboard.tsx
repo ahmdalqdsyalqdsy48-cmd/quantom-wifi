@@ -1,6 +1,6 @@
 
 import React, { useState, useEffect, useMemo, useTransition, useRef } from 'react';
-import { User, UserRole, Status, PointRequest, SettlementReport, BankAccount, Card, CardStatus, Order, Agent, MikroTikConfig } from '../types';
+import { User, UserRole, Status, PointRequest, SettlementReport, BankAccount, Card, CardStatus, Order, Agent, MikroTikConfig, SystemSettings, AgentVisibleTabs, TabConfig, DynamicTab, ContentType } from '../types';
 import { StorageService, SystemLog } from '../services/storage';
 import { useNotification } from '../components/Layout';
 // @ts-ignore
@@ -97,6 +97,16 @@ const SimpleBarChart: React.FC<{ data: number[], labels: string[], color: string
     );
 };
 
+const DetailBox: React.FC<{ label: string; value: string | number; icon: string; color: string; fullWidth?: boolean }> = ({ label, value, icon, color, fullWidth }) => (
+    <div className={`p-4 rounded-2xl border ${color} ${fullWidth ? 'col-span-full' : ''} flex flex-col gap-1 shadow-sm hover:shadow-md transition-all`}>
+        <div className="flex items-center gap-2 opacity-70">
+            <span className="text-sm">{icon}</span>
+            <span className="text-[10px] font-black uppercase tracking-wider">{label}</span>
+        </div>
+        <div className="text-sm font-black truncate">{value}</div>
+    </div>
+);
+
 const AdminDashboard: React.FC<{ currentUser: User }> = ({ currentUser }) => {
   const { showNotification } = useNotification();
   const [_, startTransition] = useTransition();
@@ -116,7 +126,20 @@ const AdminDashboard: React.FC<{ currentUser: User }> = ({ currentUser }) => {
   const [allCards, setAllCards] = useState<Card[]>([]);
   const [categories, setCategories] = useState<any[]>([]);
   const [systemLogs, setSystemLogs] = useState<SystemLog[]>([]);
-  const [systemSettings, setSystemSettings] = useState({ maintenance: false, announcement: '' });
+  const [systemSettings, setSystemSettings] = useState<SystemSettings>({ 
+    maintenance: false, 
+    announcement: '',
+    agentTabs: StorageService.getDefaultAgentTabs(),
+    userTabs: StorageService.getDefaultUserTabs(),
+    agentVisibleTabs: {
+      stats: true,
+      categories: true,
+      archive: true,
+      sales: true,
+      settlements: true,
+      settings: true,
+    }
+  });
   
   // Admin Profile
   const [adminAvatar, setAdminAvatar] = useState<string | null>(null);
@@ -166,6 +189,14 @@ const AdminDashboard: React.FC<{ currentUser: User }> = ({ currentUser }) => {
   const [amountInput, setAmountInput] = useState('');
 
   const [viewModal, setViewModal] = useState<{ isOpen: boolean; title: string; data: any; type: string } | null>(null);
+  const [showTabEditor, setShowTabEditor] = useState<{ isOpen: boolean; tab?: DynamicTab } | null>(null);
+  const [tabForm, setTabForm] = useState<Partial<DynamicTab>>({
+    label: '',
+    icon: '',
+    contentType: 'text',
+    content: '',
+    enabled: true
+  });
 
   // --- Initialization ---
   const refreshData = () => {
@@ -182,8 +213,7 @@ const AdminDashboard: React.FC<{ currentUser: User }> = ({ currentUser }) => {
     setAdminTheme(StorageService.getAdminTheme());
     setStatOffsets(StorageService.getStatOffsets());
     
-    const savedSettings = localStorage.getItem('qw_admin_settings');
-    if(savedSettings) setSystemSettings(JSON.parse(savedSettings));
+    setSystemSettings(StorageService.getSystemSettings());
 
     const savedMikroTik = localStorage.getItem('qw_mikrotik_config');
     if(savedMikroTik) setMikroTikConfig(JSON.parse(savedMikroTik));
@@ -246,7 +276,7 @@ const AdminDashboard: React.FC<{ currentUser: User }> = ({ currentUser }) => {
   };
 
   const handleSaveSettings = () => {
-      localStorage.setItem('qw_admin_settings', JSON.stringify(systemSettings));
+      StorageService.saveSystemSettings(systemSettings);
       StorageService.updateAdminTheme(adminTheme);
       showNotification('تم حفظ الإعدادات ✅', 'success');
   };
@@ -260,6 +290,50 @@ const AdminDashboard: React.FC<{ currentUser: User }> = ({ currentUser }) => {
       StorageService.updatePassword(currentUser.id, adminPassForm.new);
       showNotification('تم تحديث كلمة المرور بنجاح ✅', 'success');
       setAdminPassForm({ new: '', confirm: '' });
+  };
+
+  const handleSaveTab = () => {
+    if (!tabForm.label || !tabForm.icon) {
+      showNotification('يرجى ملء الاسم والأيقونة', 'error');
+      return;
+    }
+
+    if (showTabEditor?.tab) {
+      StorageService.updateUserTab(showTabEditor.tab.id, tabForm);
+      showNotification('تم تحديث التبويب بنجاح ✅', 'success');
+    } else {
+      StorageService.addUserTab(tabForm as any);
+      showNotification('تم إضافة التبويب بنجاح ✨', 'success');
+    }
+    setShowTabEditor(null);
+    refreshData();
+  };
+
+  const handleDeleteTab = (id: string) => {
+    setConfirmModal({
+      isOpen: true,
+      title: 'حذف تبويب',
+      message: 'هل أنت متأكد من حذف هذا التبويب؟ لا يمكن التراجع عن هذه العملية.',
+      type: 'danger',
+      action: () => {
+        StorageService.deleteUserTab(id);
+        refreshData();
+        showNotification('تم حذف التبويب بنجاح 🗑️', 'info');
+        setConfirmModal(prev => ({ ...prev, isOpen: false }));
+      }
+    });
+  };
+
+  const handleMoveTab = (id: string, direction: 'up' | 'down') => {
+    const tabs = [...systemSettings.userTabs.tabs].sort((a, b) => a.order - b.order);
+    const idx = tabs.findIndex(t => t.id === id);
+    if (direction === 'up' && idx > 0) {
+      [tabs[idx], tabs[idx - 1]] = [tabs[idx - 1], tabs[idx]];
+    } else if (direction === 'down' && idx < tabs.length - 1) {
+      [tabs[idx], tabs[idx + 1]] = [tabs[idx + 1], tabs[idx]];
+    }
+    StorageService.reorderUserTabs(tabs);
+    refreshData();
   };
 
   const handleSaveUser = () => {
@@ -378,17 +452,20 @@ const AdminDashboard: React.FC<{ currentUser: User }> = ({ currentUser }) => {
         if (type === 'مبيعات') {
             const o = data as Order;
             return (
-                <div className="space-y-4">
-                    <div className="flex justify-between border-b pb-2"><span className="text-slate-500">رقم العملية</span><span className="font-mono text-xs">{o.id}</span></div>
-                    <div className="flex justify-between border-b pb-2"><span className="text-slate-500">العميل</span><span className="font-bold">{o.userName}</span></div>
-                    <div className="flex justify-between border-b pb-2"><span className="text-slate-500">الشبكة</span><span className="font-bold text-indigo-600">{o.networkName}</span></div>
-                    <div className="flex justify-between border-b pb-2"><span className="text-slate-500">الفئة</span><span className="font-bold">{o.categoryName}</span></div>
-                    <div className="flex justify-between border-b pb-2"><span className="text-slate-500">سعر البيع</span><span className="font-black text-lg text-cyan-600">{o.pointsUsed} ن</span></div>
-                    <div className="flex justify-between border-b pb-2"><span className="text-slate-500">ربح النظام</span><span className="font-bold text-emerald-600">{o.masterProfit.toFixed(2)} ن</span></div>
-                    <div className="flex justify-between border-b pb-2"><span className="text-slate-500">تاريخ العملية</span><span className="font-bold" dir="ltr">{new Date(o.createdAt).toLocaleString()}</span></div>
-                    <div className="bg-slate-50 p-3 rounded-xl">
-                        <span className="block text-[10px] text-slate-400 mb-1">بيانات الكرت (مشفر)</span>
-                        <code className="block text-xs font-mono break-all">{o.cardNumber}</code>
+                <div className="grid grid-cols-2 gap-3 animate-in fade-in zoom-in duration-300">
+                    <DetailBox label="رقم العملية" value={o.id} icon="🆔" color="bg-slate-50 border-slate-200 text-slate-700" fullWidth />
+                    <DetailBox label="العميل" value={o.userName} icon="👤" color="bg-indigo-50 border-indigo-200 text-indigo-700" />
+                    <DetailBox label="الشبكة" value={o.networkName} icon="📡" color="bg-violet-50 border-violet-200 text-violet-700" />
+                    <DetailBox label="الفئة" value={o.categoryName} icon="🏷️" color="bg-blue-50 border-blue-200 text-blue-700" />
+                    <DetailBox label="سعر البيع" value={`${o.pointsUsed} ن`} icon="💰" color="bg-cyan-50 border-cyan-200 text-cyan-700" />
+                    <DetailBox label="ربح النظام" value={`${o.masterProfit.toFixed(2)} ن`} icon="📈" color="bg-emerald-50 border-emerald-200 text-emerald-700" />
+                    <DetailBox label="ربح الوكيل" value={`${o.agentEarnings.toFixed(2)} ن`} icon="🤝" color="bg-amber-50 border-amber-200 text-amber-700" />
+                    <DetailBox label="التاريخ" value={new Date(o.createdAt).toLocaleString('ar-YE')} icon="📅" color="bg-slate-50 border-slate-200 text-slate-600" fullWidth />
+                    <div className="col-span-full bg-slate-900 text-white p-4 rounded-2xl space-y-2 shadow-inner">
+                        <div className="flex items-center gap-2 opacity-60 text-[10px] font-black uppercase tracking-widest">
+                            <span>🔐</span> بيانات الكرت (مشفر)
+                        </div>
+                        <code className="block text-xs font-mono break-all text-indigo-300 leading-relaxed">{o.cardNumber}</code>
                     </div>
                 </div>
             );
@@ -397,20 +474,21 @@ const AdminDashboard: React.FC<{ currentUser: User }> = ({ currentUser }) => {
         // Handling Users and Agents
         if (type === 'مستخدم' || type === 'وكيل') {
             const u = data as User;
+            const isAgent = u.role === UserRole.AGENT;
             return (
-                <div className="space-y-4">
-                     <div className="flex justify-between border-b pb-2"><span className="text-slate-500">الاسم</span><span className="font-bold">{u.fullName}</span></div>
-                     <div className="flex justify-between border-b pb-2"><span className="text-slate-500">البريد</span><span className="font-bold">{u.email}</span></div>
-                     <div className="flex justify-between border-b pb-2"><span className="text-slate-500">الدور</span><span className="font-bold">{u.role}</span></div>
-                     <div className="flex justify-between border-b pb-2"><span className="text-slate-500">الرصيد</span><span className="font-bold">{u.pointsBalance}</span></div>
-                     <div className="flex justify-between border-b pb-2"><span className="text-slate-500">الحالة</span><span className={`font-bold ${u.isActive?'text-green-600':'text-red-600'}`}>{u.isActive?'نشط':'موقف'}</span></div>
-                     <div className="flex justify-between border-b pb-2"><span className="text-slate-500">تاريخ التسجيل</span><span className="font-bold" dir="ltr">{new Date(u.createdAt).toLocaleString()}</span></div>
-                     {u.role === UserRole.AGENT && (
-                         <>
-                            <div className="flex justify-between border-b pb-2"><span className="text-slate-500">الشبكة</span><span className="font-bold text-indigo-600">{(u as Agent).networkName}</span></div>
-                            <div className="flex justify-between border-b pb-2"><span className="text-slate-500">نسبة الربح</span><span className="font-bold">{(u as Agent).profitPercentage}%</span></div>
-                         </>
-                     )}
+                <div className="grid grid-cols-2 gap-3 animate-in fade-in zoom-in duration-300">
+                    <DetailBox label="الاسم الكامل" value={u.fullName} icon="👤" color="bg-indigo-50 border-indigo-200 text-indigo-700" fullWidth />
+                    <DetailBox label="البريد الإلكتروني" value={u.email} icon="📧" color="bg-slate-50 border-slate-200 text-slate-700" fullWidth />
+                    <DetailBox label="نوع الحساب" value={u.role} icon="🛡️" color="bg-violet-50 border-violet-200 text-violet-700" />
+                    <DetailBox label="الرصيد الحالي" value={`${u.pointsBalance} ن`} icon="💎" color="bg-cyan-50 border-cyan-200 text-cyan-700" />
+                    <DetailBox label="حالة الحساب" value={u.isActive ? 'نشط' : 'موقف'} icon="⚡" color={u.isActive ? 'bg-emerald-50 border-emerald-200 text-emerald-700' : 'bg-rose-50 border-rose-200 text-rose-700'} />
+                    <DetailBox label="تاريخ الانضمام" value={new Date(u.createdAt).toLocaleDateString('ar-YE')} icon="📅" color="bg-slate-50 border-slate-200 text-slate-600" />
+                    {isAgent && (
+                        <>
+                            <DetailBox label="اسم الشبكة" value={(u as Agent).networkName} icon="📡" color="bg-blue-50 border-blue-200 text-blue-700" />
+                            <DetailBox label="نسبة ربح النظام" value={`${(u as Agent).profitPercentage}%`} icon="📊" color="bg-amber-50 border-amber-200 text-amber-700" />
+                        </>
+                    )}
                 </div>
             );
         }
@@ -418,41 +496,113 @@ const AdminDashboard: React.FC<{ currentUser: User }> = ({ currentUser }) => {
         // Handling Financial Requests (Deposits & Settlements)
         if (type === 'شحن' || type === 'تسوية') {
              const isSettlement = type === 'تسوية';
+             const statusColor = data.status === Status.COMPLETED || data.status === Status.PAID ? 'bg-emerald-50 border-emerald-200 text-emerald-700' : 
+                               data.status === Status.PENDING ? 'bg-blue-50 border-blue-200 text-blue-700' : 'bg-rose-50 border-rose-200 text-rose-700';
              return (
-                 <div className="space-y-4">
-                     <div className="flex justify-between border-b pb-2"><span className="text-slate-500">رقم العملية</span><span className="font-mono text-xs">{data.id}</span></div>
-                     <div className="flex justify-between border-b pb-2"><span className="text-slate-500">صاحب الطلب</span><span className="font-bold">{isSettlement ? data.agentName : data.userName}</span></div>
-                     <div className="flex justify-between border-b pb-2"><span className="text-slate-500">المبلغ</span><span className="font-black text-lg text-emerald-600">{isSettlement ? data.agentEarnings : data.amount}</span></div>
-                     <div className="flex justify-between border-b pb-2"><span className="text-slate-500">الحالة</span><span className="font-bold">{data.status}</span></div>
-                     <div className="flex justify-between border-b pb-2"><span className="text-slate-500">التاريخ</span><span className="font-bold" dir="ltr">{new Date(data.createdAt).toLocaleString()}</span></div>
-                     {isSettlement ? (
-                         <div className="bg-slate-50 p-3 rounded-xl space-y-2">
-                             <h4 className="font-bold text-xs text-indigo-600">بيانات البنك (للاستلام)</h4>
-                             <p className="text-xs">البنك: {data.bankDetails.bankName}</p>
-                             <p className="text-xs">الحساب: {data.bankDetails.accountNumber}</p>
-                             <p className="text-xs">المستفيد: {data.bankDetails.accountHolder}</p>
-                             {data.referenceNumber && <p className="text-xs font-mono mt-2 pt-2 border-t">مرجع التحويل: {data.referenceNumber}</p>}
+                 <div className="grid grid-cols-2 gap-3 animate-in fade-in zoom-in duration-300">
+                     <DetailBox label="رقم الطلب" value={data.id} icon="🆔" color="bg-slate-50 border-slate-200 text-slate-700" fullWidth />
+                     <DetailBox label="صاحب الطلب" value={isSettlement ? data.agentName : data.userName} icon="👤" color="bg-indigo-50 border-indigo-200 text-indigo-700" />
+                     <DetailBox label="المبلغ" value={`${isSettlement ? data.agentEarnings : data.amount} ن`} icon="💰" color="bg-cyan-50 border-cyan-200 text-cyan-700" />
+                     <DetailBox label="حالة الطلب" value={data.status} icon="🔔" color={statusColor} />
+                     <DetailBox label="التاريخ" value={new Date(data.createdAt).toLocaleString('ar-YE')} icon="📅" color="bg-slate-50 border-slate-200 text-slate-600" />
+                     
+                     <div className="col-span-full p-4 rounded-2xl border border-indigo-100 bg-indigo-50/30 space-y-3">
+                         <h4 className="font-black text-[10px] text-indigo-600 uppercase tracking-widest flex items-center gap-2">
+                             <span>🏦</span> {isSettlement ? 'بيانات البنك (للاستلام)' : 'تفاصيل الدفع (من المستخدم)'}
+                         </h4>
+                         <div className="grid grid-cols-1 md:grid-cols-2 gap-2 text-xs">
+                             {isSettlement ? (
+                                 <>
+                                     <div className="flex justify-between border-b border-indigo-100 pb-1"><span>البنك:</span><span className="font-bold">{data.bankDetails.bankName}</span></div>
+                                     <div className="flex justify-between border-b border-indigo-100 pb-1"><span>الحساب:</span><span className="font-mono font-bold">{data.bankDetails.accountNumber}</span></div>
+                                     <div className="flex justify-between border-b border-indigo-100 pb-1"><span>المستفيد:</span><span className="font-bold">{data.bankDetails.accountHolder}</span></div>
+                                     {data.referenceNumber && <div className="flex justify-between border-b border-indigo-100 pb-1"><span>المرجع:</span><span className="font-mono font-bold">{data.referenceNumber}</span></div>}
+                                 </>
+                             ) : (
+                                 <>
+                                     <div className="flex justify-between border-b border-indigo-100 pb-1"><span>الطريقة:</span><span className="font-bold">{data.paymentMethod}</span></div>
+                                     <div className="flex justify-between border-b border-indigo-100 pb-1"><span>المرجع:</span><span className="font-mono font-bold">{data.referenceNumber}</span></div>
+                                     <div className="flex justify-between border-b border-indigo-100 pb-1"><span>المودع:</span><span className="font-bold">{data.recipientName}</span></div>
+                                 </>
+                             )}
                          </div>
-                     ) : (
-                         <div className="bg-slate-50 p-3 rounded-xl space-y-2">
-                             <h4 className="font-bold text-xs text-indigo-600">تفاصيل الدفع (من المستخدم)</h4>
-                             <p className="text-xs">الطريقة: {data.paymentMethod}</p>
-                             <p className="text-xs">المرجع: {data.referenceNumber}</p>
-                             <p className="text-xs">اسم المودع: {data.recipientName}</p>
+                     </div>
+                     {data.adminNotes && (
+                         <div className="col-span-full bg-amber-50 border border-amber-200 p-4 rounded-2xl text-xs text-amber-800 flex flex-col gap-1">
+                             <span className="font-black text-[9px] uppercase tracking-widest opacity-60">📝 ملاحظات الإدارة</span>
+                             {data.adminNotes}
                          </div>
                      )}
-                     {data.adminNotes && <div className="bg-amber-50 p-3 rounded-xl text-xs text-amber-800">ملاحظات الإدارة: {data.adminNotes}</div>}
                  </div>
              );
         }
 
         // Default fallback (Logs, etc.)
+        if (type === 'مراقبة_مستخدم') {
+            const u = data as User;
+            const userOrders = orders.filter(o => o.userId === u.id);
+            const userLogins = systemLogs.filter(l => l.performedBy === u.fullName && l.action === 'تسجيل دخول');
+            return (
+                <div className="space-y-6 animate-in fade-in zoom-in duration-300">
+                    <div className="grid grid-cols-2 gap-3">
+                        <DetailBox label="إجمالي المشتريات" value={`${userOrders.length} كرت`} icon="🛒" color="bg-indigo-50 border-indigo-200 text-indigo-700" />
+                        <DetailBox label="إجمالي المدفوعات" value={`${userOrders.reduce((acc, o) => acc + o.pointsUsed, 0)} ن`} icon="💰" color="bg-emerald-50 border-emerald-200 text-emerald-700" />
+                    </div>
+
+                    <div className="space-y-3">
+                        <h4 className="text-[10px] font-black text-slate-400 uppercase tracking-widest border-b pb-1">سجل المشتريات التفصيلي</h4>
+                        <div className="max-h-48 overflow-y-auto space-y-2 pr-1 custom-scrollbar">
+                            {userOrders.map(o => (
+                                <div key={o.id} className="p-3 bg-slate-50 dark:bg-white/5 rounded-xl border border-slate-100 dark:border-white/10 flex justify-between items-center">
+                                    <div>
+                                        <p className="text-xs font-bold">{o.categoryName}</p>
+                                        <p className="text-[9px] text-slate-400">{o.networkName}</p>
+                                    </div>
+                                    <div className="text-right">
+                                        <p className="text-xs font-black text-indigo-600">{o.pointsUsed} ن</p>
+                                        <p className="text-[9px] text-slate-400" dir="ltr">{new Date(o.createdAt).toLocaleDateString('ar-YE')}</p>
+                                    </div>
+                                </div>
+                            ))}
+                            {userOrders.length === 0 && <p className="text-center text-[10px] text-slate-400 py-4">لا توجد مشتريات مسجلة</p>}
+                        </div>
+                    </div>
+
+                    <div className="space-y-3">
+                        <h4 className="text-[10px] font-black text-slate-400 uppercase tracking-widest border-b pb-1">سجل الدخول</h4>
+                        <div className="max-h-48 overflow-y-auto space-y-2 pr-1 custom-scrollbar">
+                            {userLogins.map(l => (
+                                <div key={l.id} className="p-3 bg-indigo-50/30 dark:bg-indigo-900/10 rounded-xl flex justify-between items-center">
+                                    <span className="text-[10px] font-bold">تسجيل دخول ناجح</span>
+                                    <span className="text-[10px] font-mono opacity-60" dir="ltr">{new Date(l.timestamp).toLocaleString('ar-YE')}</span>
+                                </div>
+                            ))}
+                            {userLogins.length === 0 && <p className="text-center text-[10px] text-slate-400 py-4">لا توجد سجلات دخول</p>}
+                        </div>
+                    </div>
+                </div>
+            );
+        }
+
+        if (type === 'نظام' || type === 'تصفير') {
+            const l = data as SystemLog;
+            return (
+                <div className="grid grid-cols-2 gap-3 animate-in fade-in zoom-in duration-300">
+                    <DetailBox label="نوع السجل" value={l.type} icon="📜" color="bg-slate-50 border-slate-200 text-slate-700" />
+                    <DetailBox label="بواسطة" value={l.performedBy} icon="👤" color="bg-indigo-50 border-indigo-200 text-indigo-700" />
+                    <DetailBox label="التاريخ" value={new Date(l.timestamp).toLocaleString('ar-YE')} icon="📅" color="bg-slate-50 border-slate-200 text-slate-600" fullWidth />
+                    <div className="col-span-full bg-slate-50 border border-slate-200 p-4 rounded-2xl text-xs text-slate-700 flex flex-col gap-1">
+                        <span className="font-black text-[9px] uppercase tracking-widest opacity-60">📄 تفاصيل الإجراء</span>
+                        {l.details}
+                    </div>
+                </div>
+            );
+        }
+
         return (
-            <div className="space-y-2">
-                <h4 className="font-bold text-xs border-b pb-2">بيانات السجل الخام</h4>
-                <pre className="text-[10px] overflow-auto bg-slate-50 p-2 rounded-lg max-h-60" dir="ltr">
-                    {JSON.stringify(data, null, 2)}
-                </pre>
+            <div className="p-8 text-center text-slate-400">
+                <div className="text-4xl mb-2">🔍</div>
+                <p className="text-xs font-bold">لا توجد بيانات إضافية لعرضها</p>
             </div>
         );
   };
@@ -697,8 +847,27 @@ const AdminDashboard: React.FC<{ currentUser: User }> = ({ currentUser }) => {
         ...settlements.map(s => ({ id: s.id, user: s.agentName, details: `سحب: ${s.bankDetails.bankName}`, network: s.networkName, value: s.agentEarnings, date: s.createdAt, type: 'تسوية', status: s.status, original: s })),
         ...systemLogs.map(l => ({ id: l.id, user: l.performedBy, details: l.details, network: 'إداري', value: '-', date: l.timestamp, type: l.type === 'RESET' ? 'تصفير' : 'نظام', status: 'منفذ', original: l }))
     ];
-    if (logFilter !== 'ALL') { /* Filter logic same as before */ }
-    if (logSearch) { /* Search logic same as before */ }
+    if (logFilter !== 'ALL') {
+        allActivities = allActivities.filter(act => {
+            switch(logFilter) {
+                case 'SALES': return act.type === 'مبيعات';
+                case 'DEPOSITS': return act.type === 'شحن';
+                case 'SETTLEMENTS': return act.type === 'تسوية';
+                case 'SYSTEM': return act.type === 'نظام' || act.type === 'تصفير';
+                case 'AGENTS': return act.type === 'تسوية' || (act.type === 'نظام' && act.details.includes('وكيل'));
+                case 'USERS': return act.type === 'شحن' || act.type === 'مبيعات';
+                default: return true;
+            }
+        });
+    }
+    if (logSearch) {
+        const s = logSearch.toLowerCase();
+        allActivities = allActivities.filter(act => 
+            act.user.toLowerCase().includes(s) || 
+            act.details.toLowerCase().includes(s) || 
+            act.network.toLowerCase().includes(s)
+        );
+    }
     return allActivities.sort((a,b) => new Date(b.date).getTime() - new Date(a.date).getTime()).slice(0, 100);
   }, [orders, pointRequests, settlements, systemLogs, logFilter, logSearch]);
 
@@ -710,6 +879,8 @@ const AdminDashboard: React.FC<{ currentUser: User }> = ({ currentUser }) => {
     { id: 'finance', label: 'المالية', icon: '💰' },
     { id: 'banks', label: 'البنوك', icon: '🏦' },
     { id: 'reports', label: 'التقارير', icon: '📊' },
+    { id: 'monitoring', label: 'مراقبة المستخدمين', icon: '👁️' },
+    { id: 'ui_custom', label: 'تخصيص الواجهة', icon: '🎨' },
     { id: 'settings', label: 'النظام', icon: '⚙️' },
   ];
 
@@ -806,8 +977,8 @@ const AdminDashboard: React.FC<{ currentUser: User }> = ({ currentUser }) => {
 
                   {/* 15 Real Stats Cards */}
                   <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-5 gap-4">
-                      {analytics.metrics.map(m => (
-                          <StatCard key={m.key} {...m} onReset={() => handleResetStat(m.key, m.title, m.raw)} />
+                      {analytics.metrics.map(({ key, ...m }) => (
+                          <StatCard key={key} {...m} onReset={() => handleResetStat(key, m.title, m.raw)} />
                       ))}
                   </div>
 
@@ -1192,6 +1363,107 @@ const AdminDashboard: React.FC<{ currentUser: User }> = ({ currentUser }) => {
               </div>
           )}
           
+          {/* USER MONITORING SECTION */}
+          {activeSection === 'monitoring' && (
+              <div className="space-y-6 animate-in slide-in-from-bottom-4">
+                  <SectionHeader title="مراقبة المستخدمين والنشاط" subtitle="متابعة عمليات الدخول، المشتريات، وإدارة الحظر" />
+                  
+                  <div className="grid grid-cols-1 gap-6">
+                      {users.filter(u => u.role === UserRole.USER).map(user => {
+                          const userOrders = orders.filter(o => o.userId === user.id);
+                          const userLogins = systemLogs.filter(l => l.performedBy === user.fullName && l.action === 'تسجيل دخول');
+                          
+                          // Calculate purchase stats
+                          const purchaseStats = userOrders.reduce((acc, o) => {
+                              acc.total += 1;
+                              acc.categories.add(o.categoryName);
+                              acc.networks.add(o.networkName);
+                              return acc;
+                          }, { total: 0, categories: new Set<string>(), networks: new Set<string>() });
+
+                          return (
+                              <div key={user.id} className="glass-card p-6 rounded-[2rem] border border-slate-200 dark:border-white/5 hover:shadow-xl transition-all duration-300">
+                                  <div className="flex flex-col md:flex-row justify-between gap-6">
+                                      {/* User Info & Status */}
+                                      <div className="flex items-start gap-4 flex-1">
+                                          <div className={`w-14 h-14 rounded-2xl flex items-center justify-center text-2xl shadow-inner ${user.isActive ? 'bg-emerald-50 text-emerald-600' : 'bg-rose-50 text-rose-600'}`}>
+                                              {user.isActive ? '👤' : '🚫'}
+                                          </div>
+                                          <div className="space-y-1">
+                                              <h3 className="font-black text-lg text-slate-800 dark:text-white">{user.fullName}</h3>
+                                              <p className="text-xs text-slate-500 font-bold">{user.email}</p>
+                                              <div className="flex gap-2 mt-2">
+                                                  <span className={`px-3 py-1 rounded-full text-[10px] font-black border ${user.isActive ? 'bg-emerald-50 text-emerald-600 border-emerald-100' : 'bg-rose-50 text-rose-600 border-rose-100'}`}>
+                                                      {user.isActive ? 'حساب نشط' : 'حساب محظور'}
+                                                  </span>
+                                                  <span className="px-3 py-1 rounded-full text-[10px] font-black bg-indigo-50 text-indigo-600 border border-indigo-100">
+                                                      رصيد: {user.pointsBalance} ن
+                                                  </span>
+                                              </div>
+                                          </div>
+                                      </div>
+
+                                      {/* Purchase Summary */}
+                                      <div className="flex-1 grid grid-cols-3 gap-2">
+                                          <div className="p-3 bg-slate-50 dark:bg-white/5 rounded-xl text-center">
+                                              <p className="text-[9px] text-slate-400 font-black mb-1">إجمالي الكروت</p>
+                                              <p className="font-black text-sm text-indigo-600">{purchaseStats.total}</p>
+                                          </div>
+                                          <div className="p-3 bg-slate-50 dark:bg-white/5 rounded-xl text-center">
+                                              <p className="text-[9px] text-slate-400 font-black mb-1">الفئات</p>
+                                              <p className="font-black text-[10px] truncate" title={Array.from(purchaseStats.categories).join(', ')}>
+                                                  {purchaseStats.categories.size > 0 ? Array.from(purchaseStats.categories).join(', ') : '-'}
+                                              </p>
+                                          </div>
+                                          <div className="p-3 bg-slate-50 dark:bg-white/5 rounded-xl text-center">
+                                              <p className="text-[9px] text-slate-400 font-black mb-1">الشبكات</p>
+                                              <p className="font-black text-[10px] truncate" title={Array.from(purchaseStats.networks).join(', ')}>
+                                                  {purchaseStats.networks.size > 0 ? Array.from(purchaseStats.networks).join(', ') : '-'}
+                                              </p>
+                                          </div>
+                                      </div>
+
+                                      {/* Actions */}
+                                      <div className="flex flex-col gap-2 justify-center">
+                                          <button 
+                                              onClick={() => handleToggleAgent(user)} 
+                                              className={`px-6 py-2 rounded-xl font-black text-xs transition-all shadow-sm ${user.isActive ? 'bg-rose-50 text-rose-600 hover:bg-rose-600 hover:text-white' : 'bg-emerald-50 text-emerald-600 hover:bg-emerald-600 hover:text-white'}`}
+                                          >
+                                              {user.isActive ? 'حظر المستخدم 🚫' : 'إلغاء الحظر ✅'}
+                                          </button>
+                                          <button 
+                                              onClick={() => setViewModal({ isOpen: true, title: `سجل نشاط: ${user.fullName}`, data: user, type: 'مراقبة_مستخدم' })}
+                                              className="px-6 py-2 bg-slate-100 dark:bg-white/10 rounded-xl font-black text-xs hover:bg-slate-200 transition-all"
+                                          >
+                                              عرض السجل التفصيلي 📜
+                                          </button>
+                                      </div>
+                                  </div>
+
+                                  {/* Recent Logins Preview */}
+                                  <div className="mt-6 pt-4 border-t border-slate-100 dark:border-white/5">
+                                      <h4 className="text-[10px] font-black text-slate-400 uppercase tracking-widest mb-3">آخر عمليات تسجيل الدخول</h4>
+                                      <div className="flex gap-3 overflow-x-auto no-scrollbar">
+                                          {userLogins.length > 0 ? userLogins.slice(0, 5).map(login => (
+                                              <div key={login.id} className="flex-shrink-0 px-3 py-2 bg-indigo-50/50 dark:bg-indigo-900/20 rounded-lg border border-indigo-100 dark:border-indigo-900/30 text-[10px] font-bold">
+                                                  <span className="text-indigo-600 ml-2">🕒</span>
+                                                  {new Date(login.timestamp).toLocaleString('ar-YE')}
+                                              </div>
+                                          )) : (
+                                              <p className="text-[10px] text-slate-400 italic">لا توجد سجلات دخول مسجلة حالياً</p>
+                                          )}
+                                      </div>
+                                  </div>
+                              </div>
+                          );
+                      })}
+                      {users.filter(u => u.role === UserRole.USER).length === 0 && (
+                          <div className="p-12 text-center text-slate-400 font-bold">لا يوجد مستخدمين مسجلين حالياً</div>
+                      )}
+                  </div>
+              </div>
+          )}
+
           {/* UPDATED AGENTS SECTION: Card Layout with Circular Buttons */}
           {activeSection === 'agents' && (
               <div className="space-y-6">
@@ -1378,6 +1650,76 @@ const AdminDashboard: React.FC<{ currentUser: User }> = ({ currentUser }) => {
               </div>
           )}
 
+          {/* UI CUSTOMIZATION SECTION */}
+          {activeSection === 'ui_custom' && (
+            <div className="space-y-6">
+              <SectionHeader 
+                title="تخصيص واجهة المستخدم" 
+                subtitle="هيكلة القائمة الجانبية والأقسام الفرعية للوحة المستخدم" 
+                action={
+                  <button 
+                    onClick={() => {
+                      if (window.confirm('هل أنت متأكد من إعادة تعيين الواجهة للوضع الافتراضي؟')) {
+                        const defaultLayout = StorageService.getDefaultDashboardLayout();
+                        StorageService.updateDashboardLayout(defaultLayout);
+                        setSystemSettings({ ...systemSettings, dashboardLayout: defaultLayout });
+                        showNotification('تمت إعادة التعيين بنجاح', 'success');
+                      }
+                    }}
+                    className="px-4 py-2 bg-rose-50 text-rose-600 rounded-lg font-bold text-[10px]"
+                  >
+                    إعادة تعيين للافتراضي
+                  </button>
+                }
+              />
+
+              <div className="glass-card p-6 rounded-[2rem] border space-y-4">
+                <div className="flex justify-between items-center border-b pb-2">
+                  <h3 className="font-black text-sm flex items-center gap-2">📂 هيكل القائمة الجانبية (JSON)</h3>
+                  <div className="flex gap-2">
+                    <button 
+                      onClick={() => {
+                        try {
+                          const layout = JSON.parse((document.getElementById('layout-json') as HTMLTextAreaElement).value);
+                          StorageService.updateDashboardLayout(layout);
+                          setSystemSettings({ ...systemSettings, dashboardLayout: layout });
+                          showNotification('تم حفظ الهيكل الجديد بنجاح ✅', 'success');
+                        } catch (e) {
+                          showNotification('خطأ في تنسيق JSON', 'error');
+                        }
+                      }}
+                      className="px-4 py-2 bg-indigo-600 text-white rounded-lg font-bold text-[10px]"
+                    >
+                      حفظ التغييرات
+                    </button>
+                  </div>
+                </div>
+                
+                <p className="text-[10px] text-slate-500 font-bold">
+                  يمكنك تخصيص الأقسام الرئيسية والفرعية والأزرار عبر تحرير كائن JSON أدناه. 
+                  تأكد من اتباع الهيكل الصحيح لضمان عمل الواجهة.
+                </p>
+
+                <textarea 
+                  id="layout-json"
+                  defaultValue={JSON.stringify(systemSettings.dashboardLayout, null, 2)}
+                  className="w-full h-[500px] p-4 font-mono text-[10px] bg-slate-900 text-emerald-400 rounded-2xl border-none outline-none focus:ring-2 focus:ring-indigo-500/50"
+                  dir="ltr"
+                />
+              </div>
+
+              <div className="glass-card p-6 rounded-[2rem] border bg-indigo-50 dark:bg-white/5 space-y-3">
+                <h4 className="font-black text-xs text-indigo-600">💡 نصيحة للمدير</h4>
+                <ul className="text-[10px] font-bold text-slate-600 dark:text-slate-400 space-y-1 list-disc list-inside">
+                  <li>كل قسم رئيسي (Main Section) يظهر في القائمة الجانبية.</li>
+                  <li>الأقسام الفرعية (SubTabs) تظهر كتبويبات علوية داخل القسم المختار.</li>
+                  <li>يمكنك إضافة أزرار (Buttons) داخل أي قسم فرعي لتنفيذ إجراءات سريعة.</li>
+                  <li>أنواع المحتوى (ContentType) المدعومة تشمل: dashboard, user_wallet, transactions_list, purchased_cards, notifications, support, reports, text, html.</li>
+                </ul>
+              </div>
+            </div>
+          )}
+
           {activeSection === 'settings' && (
              <div className="max-w-2xl mx-auto space-y-6 animate-in slide-in-from-bottom-4">
                 <SectionHeader title="إعدادات النظام والملف الشخصي" />
@@ -1442,6 +1784,93 @@ const AdminDashboard: React.FC<{ currentUser: User }> = ({ currentUser }) => {
                     <button onClick={handleSaveSettings} className="w-full py-3 bg-indigo-600 text-white rounded-xl font-bold text-xs shadow-lg hover:bg-indigo-700">حفظ الإعدادات والمظهر</button>
                 </div>
 
+                {/* قسم التحكم بأقسام الوكيل */}
+                <div className="glass-card p-6 rounded-[2rem] border space-y-4">
+                  <h3 className="font-black text-sm border-b pb-2 flex items-center gap-2">🛠️ تكوين أقسام الوكيل</h3>
+                  <div className="space-y-3">
+                    {systemSettings.agentTabs.tabs.map(tab => (
+                      <div key={tab.id} className="flex justify-between items-center p-3 bg-slate-50 dark:bg-white/5 rounded-xl border border-slate-100 dark:border-white/10">
+                        <div className="flex items-center gap-3">
+                          <span className="text-lg">{tab.icon}</span>
+                          <span className="font-bold text-xs">{tab.label}</span>
+                        </div>
+                        <ToggleSwitch 
+                          checked={tab.enabled} 
+                          onChange={() => {
+                            const newTabs = systemSettings.agentTabs.tabs.map(t => t.id === tab.id ? { ...t, enabled: !t.enabled } : t);
+                            const newSettings = { ...systemSettings, agentTabs: { tabs: newTabs } };
+                            setSystemSettings(newSettings);
+                            StorageService.saveSystemSettings(newSettings);
+                            showNotification('تم تحديث إعدادات أقسام الوكيل', 'success');
+                          }} 
+                        />
+                      </div>
+                    ))}
+                  </div>
+                </div>
+
+                {/* قسم تكوين أقسام المستخدم الديناميكية */}
+                <div className="glass-card p-6 rounded-[2rem] border space-y-4">
+                  <div className="flex justify-between items-center border-b pb-2">
+                    <h3 className="font-black text-sm flex items-center gap-2">📱 إدارة أقسام المستخدم</h3>
+                    <button 
+                      onClick={() => {
+                        setTabForm({ label: '', icon: '', contentType: 'text', content: '', enabled: true });
+                        setShowTabEditor({ isOpen: true });
+                      }}
+                      className="px-3 py-1 bg-indigo-600 text-white rounded-lg text-[10px] font-black"
+                    >
+                      + إضافة تبويب
+                    </button>
+                  </div>
+                  
+                  <div className="space-y-2">
+                    {systemSettings.userTabs.tabs.sort((a, b) => a.order - b.order).map((tab, idx, arr) => (
+                      <div key={tab.id} className="flex justify-between items-center p-3 bg-slate-50 dark:bg-white/5 rounded-xl border border-slate-100 dark:border-white/10 group">
+                        <div className="flex items-center gap-3">
+                          <div className="flex flex-col gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
+                            <button disabled={idx === 0} onClick={() => handleMoveTab(tab.id, 'up')} className="text-[10px] hover:text-indigo-600 disabled:opacity-20">▲</button>
+                            <button disabled={idx === arr.length - 1} onClick={() => handleMoveTab(tab.id, 'down')} className="text-[10px] hover:text-indigo-600 disabled:opacity-20">▼</button>
+                          </div>
+                          <span className="text-lg">{tab.icon}</span>
+                          <div>
+                            <p className="font-bold text-xs">{tab.label}</p>
+                            <p className="text-[8px] opacity-50 uppercase tracking-widest">{tab.contentType}</p>
+                          </div>
+                        </div>
+                        <div className="flex items-center gap-2">
+                          <ToggleSwitch 
+                            checked={tab.enabled} 
+                            onChange={() => {
+                              const newTabs = systemSettings.userTabs.tabs.map(t => t.id === tab.id ? { ...t, enabled: !t.enabled } : t);
+                              StorageService.updateUserTabs(newTabs);
+                              refreshData();
+                              showNotification('تم تحديث حالة التبويب', 'success');
+                            }} 
+                          />
+                          <button 
+                            onClick={() => {
+                              setTabForm(tab);
+                              setShowTabEditor({ isOpen: true, tab });
+                            }}
+                            className="p-1.5 hover:bg-indigo-50 text-indigo-600 rounded-lg transition-colors"
+                          >
+                            ✏️
+                          </button>
+                          {tab.contentType !== 'builtin' && (
+                            <button 
+                              onClick={() => handleDeleteTab(tab.id)}
+                              className="p-1.5 hover:bg-rose-50 text-rose-600 rounded-lg transition-colors"
+                            >
+                              🗑️
+                            </button>
+                          )}
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+
                 {/* Data Management */}
                 <div className="glass-card p-6 rounded-[2rem] border space-y-4">
                     <h3 className="font-black text-sm border-b pb-2 flex items-center gap-2">💾 إدارة البيانات</h3>
@@ -1474,6 +1903,125 @@ const AdminDashboard: React.FC<{ currentUser: User }> = ({ currentUser }) => {
                   </div>
               </div>
           </div>
+      )}
+
+      {/* Tab Editor Modal */}
+      {showTabEditor?.isOpen && (
+        <div className="fixed inset-0 z-[110] flex items-center justify-center bg-black/60 backdrop-blur-md p-4">
+          <div className="glass-card w-full max-w-lg rounded-[2rem] bg-white dark:bg-indigo-950 shadow-2xl animate-in zoom-in duration-200">
+            <div className="p-6 border-b flex justify-between items-center">
+              <h3 className="font-black text-lg">{showTabEditor.tab ? 'تعديل تبويب' : 'إضافة تبويب جديد'}</h3>
+              <button onClick={() => setShowTabEditor(null)} className="w-8 h-8 rounded-full bg-slate-100 flex items-center justify-center">✕</button>
+            </div>
+            <div className="p-6 space-y-4">
+              <div className="grid grid-cols-2 gap-4">
+                <div className="space-y-1">
+                  <label className="text-[10px] font-bold text-slate-500">اسم التبويب</label>
+                  <input 
+                    type="text" 
+                    value={tabForm.label} 
+                    onChange={e => setTabForm({...tabForm, label: e.target.value})} 
+                    className="w-full p-3 border rounded-xl text-xs font-bold outline-none focus:border-indigo-500 dark:bg-slate-900" 
+                    placeholder="مثلاً: عروض اليوم"
+                  />
+                </div>
+                <div className="space-y-1">
+                  <label className="text-[10px] font-bold text-slate-500">الأيقونة (Emoji)</label>
+                  <input 
+                    type="text" 
+                    value={tabForm.icon} 
+                    onChange={e => setTabForm({...tabForm, icon: e.target.value})} 
+                    className="w-full p-3 border rounded-xl text-xs font-bold outline-none focus:border-indigo-500 dark:bg-slate-900" 
+                    placeholder="🔥"
+                  />
+                </div>
+              </div>
+
+              <div className="space-y-1">
+                <label className="text-[10px] font-bold text-slate-500">نوع المحتوى</label>
+                <select 
+                  value={tabForm.contentType} 
+                  onChange={e => setTabForm({...tabForm, contentType: e.target.value as ContentType})}
+                  disabled={tabForm.contentType === 'builtin'}
+                  className="w-full p-3 border rounded-xl text-xs font-bold outline-none focus:border-indigo-500 dark:bg-slate-900"
+                >
+                  <option value="text">نص بسيط</option>
+                  <option value="html">HTML مخصص</option>
+                  <option value="table">جدول بيانات (JSON)</option>
+                  <option value="cards">بطاقات عرض (JSON)</option>
+                  <option value="stats">إحصائيات النظام</option>
+                  <option value="dashboard">لوحة المعلومات (الرئيسية)</option>
+                  <option value="user_wallet">محفظة المستخدم (الرصيد والشحن)</option>
+                  <option value="transactions_list">سجل العمليات (شراء + شحن)</option>
+                  <option value="purchased_cards">الكروت المشتراة (عرض ونسخ)</option>
+                  <option value="favorite_networks">الشبكات المفضلة</option>
+                  <option value="notifications">الإشعارات</option>
+                  <option value="support">الدعم الفني</option>
+                  <option value="reports">التقارير والرسوم البيانية</option>
+                  <option value="user_summary">ملخص المستخدم (قديم)</option>
+                  <option value="full_transactions">سجل العمليات الكامل (قديم)</option>
+                  <option value="purchases_only">عمليات الشراء فقط (قديم)</option>
+                  <option value="deposits_only">عمليات الشحن فقط (قديم)</option>
+                  <option value="networks_summary">الشبكات المشتراة (قديم)</option>
+                  <option value="recent_activities">آخر العمليات (قديم)</option>
+                  {tabForm.contentType === 'builtin' && <option value="builtin">وظيفة مدمجة</option>}
+                </select>
+              </div>
+
+              <div className="space-y-1">
+                <label className="text-[10px] font-bold text-slate-500">المحتوى</label>
+                {tabForm.contentType === 'text' && (
+                  <textarea 
+                    value={tabForm.content} 
+                    onChange={e => setTabForm({...tabForm, content: e.target.value})} 
+                    className="w-full p-3 border rounded-xl text-xs font-bold h-32 outline-none focus:border-indigo-500 dark:bg-slate-900" 
+                    placeholder="اكتب النص هنا..."
+                  />
+                )}
+                {tabForm.contentType === 'html' && (
+                  <textarea 
+                    value={tabForm.content} 
+                    onChange={e => setTabForm({...tabForm, content: e.target.value})} 
+                    className="w-full p-3 border rounded-xl text-xs font-mono h-32 outline-none focus:border-indigo-500 dark:bg-slate-900" 
+                    placeholder="<div class='p-4'>...</div>"
+                  />
+                )}
+                {(tabForm.contentType === 'table' || tabForm.contentType === 'cards' || tabForm.contentType === 'stats') && (
+                  <textarea 
+                    value={typeof tabForm.content === 'string' ? tabForm.content : JSON.stringify(tabForm.content, null, 2)} 
+                    onChange={e => {
+                      try {
+                        const val = JSON.parse(e.target.value);
+                        setTabForm({...tabForm, content: val});
+                      } catch (err) {
+                        setTabForm({...tabForm, content: e.target.value});
+                      }
+                    }} 
+                    className="w-full p-3 border rounded-xl text-xs font-mono h-32 outline-none focus:border-indigo-500 dark:bg-slate-900" 
+                    placeholder="{ ... }"
+                  />
+                )}
+                {tabForm.contentType === 'builtin' && (
+                  <div className="p-4 bg-slate-50 rounded-xl text-[10px] font-bold text-slate-500">
+                    هذا التبويب مرتبط بوظيفة مدمجة في النظام (مثل التسوق أو الإعدادات) ولا يمكن تعديل محتواه يدوياً.
+                  </div>
+                )}
+              </div>
+
+              <div className="flex justify-between items-center pt-2">
+                <span className="text-xs font-bold">تفعيل التبويب</span>
+                <ToggleSwitch checked={tabForm.enabled || false} onChange={() => setTabForm({...tabForm, enabled: !tabForm.enabled})} />
+              </div>
+
+              <button 
+                onClick={handleSaveTab}
+                className="w-full py-4 bg-indigo-600 text-white rounded-2xl font-black text-xs shadow-xl hover:bg-indigo-700 transition-all"
+              >
+                حفظ التبويب
+              </button>
+            </div>
+          </div>
+        </div>
       )}
 
       {/* Dynamic Confirm Modal (Approve/Reject/Edit) */}

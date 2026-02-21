@@ -38,6 +38,7 @@ const App: React.FC = () => {
   }, []);
 
   const handleLogin = (user: User) => {
+    StorageService.logAction('تسجيل دخول', `تم تسجيل دخول المستخدم ${user.fullName}`, user.fullName, 'SYSTEM');
     setCurrentUser(user);
     localStorage.setItem('qw_current_user', JSON.stringify(user));
     window.location.hash = '';

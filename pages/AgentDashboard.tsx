@@ -1,6 +1,6 @@
 
 import React, { useState, useEffect } from 'react';
-import { Agent, Category, Card, CardStatus, Order, Status, SettlementReport, AgentBankDetails } from '../types';
+import { Agent, Category, Card, CardStatus, Order, Status, SettlementReport, AgentBankDetails, AgentVisibleTabs, TabConfig } from '../types';
 import { StorageService } from '../services/storage';
 import { useNotification } from '../components/Layout';
 // @ts-ignore
@@ -11,6 +11,7 @@ const AgentDashboard: React.FC<{ user: Agent }> = ({ user }) => {
 
   // --- Core State ---
   const [activeTab, setActiveTab] = useState<'stats' | 'categories' | 'archive' | 'sales' | 'settlements' | 'settings'>('stats');
+  const [isSidebarOpen, setIsSidebarOpen] = useState(true);
   
   const [data, setData] = useState({ 
     categories: [] as Category[], 
@@ -40,8 +41,10 @@ const AgentDashboard: React.FC<{ user: Agent }> = ({ user }) => {
 
   // --- Filters & Search ---
   const [searchQuery, setSearchQuery] = useState('');
+  const [salesFilter, setSalesFilter] = useState<'all' | 'customer' | 'category' | 'most_sold'>('all');
   const [dateRange, setDateRange] = useState({ start: '', end: '' });
   const [revealedCards, setRevealedCards] = useState<Record<string, boolean>>({});
+  const [tabsConfig, setTabsConfig] = useState<TabConfig[]>([]);
 
   // --- Forms ---
   const [catForm, setCatForm] = useState({ name: '', pointsPrice: 0, dataSize: '', note: '', isActive: true });
@@ -74,6 +77,17 @@ const AgentDashboard: React.FC<{ user: Agent }> = ({ user }) => {
     refresh();
   }, [user.id, activeTab]);
 
+  useEffect(() => {
+    const settings = StorageService.getSystemSettings();
+    const enabledTabs = settings.agentTabs.tabs.filter(t => t.enabled);
+    setTabsConfig(enabledTabs);
+    
+    // If current tab is disabled, move to first enabled one
+    if (!enabledTabs.some(t => t.id === activeTab) && enabledTabs.length > 0) {
+      setActiveTab(enabledTabs[0].id as any);
+    }
+  }, [activeTab]);
+
   const currentUser = StorageService.getAgents().find(a => a.id === user.id);
   const agentBankAccounts = currentUser?.bankAccounts || (currentUser?.savedBankDetails ? [currentUser.savedBankDetails] : []);
 
@@ -92,6 +106,8 @@ const AgentDashboard: React.FC<{ user: Agent }> = ({ user }) => {
 
   const financials = calculateFinancials();
   
+  const agentMenuItems = tabsConfig;
+
   // --- Handlers ---
 
   // 1. Categories
@@ -242,8 +258,26 @@ const AgentDashboard: React.FC<{ user: Agent }> = ({ user }) => {
 
   // --- Filtering Orders ---
   const getFilteredOrders = () => {
-      return data.orders.filter(o => {
-          const matchesSearch = o.userName.includes(searchQuery) || o.categoryName.includes(searchQuery);
+      let orders = [...data.orders];
+
+      // Handle "Most Sold" logic - this is more of a sort/grouping but we'll adapt it
+      if (salesFilter === 'most_sold') {
+          const counts: Record<string, number> = {};
+          orders.forEach(o => counts[o.categoryName] = (counts[o.categoryName] || 0) + 1);
+          orders.sort((a, b) => (counts[b.categoryName] || 0) - (counts[a.categoryName] || 0));
+      }
+
+      return orders.filter(o => {
+          let matchesSearch = true;
+          if (salesFilter === 'customer') {
+              matchesSearch = o.userName.toLowerCase().includes(searchQuery.toLowerCase());
+          } else if (salesFilter === 'category') {
+              matchesSearch = o.categoryName.toLowerCase().includes(searchQuery.toLowerCase());
+          } else {
+              matchesSearch = o.userName.toLowerCase().includes(searchQuery.toLowerCase()) || 
+                            o.categoryName.toLowerCase().includes(searchQuery.toLowerCase());
+          }
+
           const orderDate = new Date(o.createdAt);
           const start = dateRange.start ? new Date(dateRange.start) : null;
           const end = dateRange.end ? new Date(dateRange.end) : null;
@@ -252,7 +286,10 @@ const AgentDashboard: React.FC<{ user: Agent }> = ({ user }) => {
 
           const matchesDate = (!start || orderDate >= start) && (!end || orderDate <= end);
           return matchesSearch && matchesDate;
-      }).sort((a,b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
+      }).sort((a,b) => {
+          if (salesFilter === 'most_sold') return 0; // Keep the most_sold sort
+          return new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime();
+      });
   };
 
   const filteredOrders = getFilteredOrders();
@@ -345,24 +382,77 @@ const AgentDashboard: React.FC<{ user: Agent }> = ({ user }) => {
   };
 
   return (
-    <div className="space-y-6 pb-20 animate-in fade-in duration-500">
+    <div className="min-h-screen bg-slate-50 dark:bg-indigo-950 flex transition-all duration-300 text-sm overflow-x-hidden">
+      
+      {/* Sidebar */}
+      <aside className={`fixed top-0 right-0 z-50 h-screen bg-white dark:bg-slate-900 border-l border-slate-200 dark:border-white/5 shadow-2xl transition-transform duration-300 w-64 ${isSidebarOpen ? 'translate-x-0' : 'translate-x-full lg:translate-x-0 lg:w-0'}`}>
+          <div className="h-24 flex items-center justify-center border-b border-slate-100 dark:border-white/5 bg-indigo-950 text-white">
+              <div className="flex items-center gap-3">
+                  <div className="w-10 h-10 bg-indigo-600 rounded-2xl flex items-center justify-center text-xl shadow-lg">📡</div>
+                  <div className="text-right">
+                      <h1 className="font-black text-sm leading-none">{user.networkName}</h1>
+                      <p className="text-[9px] opacity-60 mt-1 font-bold">لوحة تحكم الوكيل</p>
+                  </div>
+              </div>
+          </div>
+
+          <nav className="p-4 space-y-2 overflow-y-auto h-[calc(100vh-160px)] no-scrollbar">
+              {agentMenuItems.map(item => (
+                  <button
+                      key={item.id}
+                      onClick={() => { setActiveTab(item.id as any); if (window.innerWidth < 1024) setIsSidebarOpen(false); }}
+                      className={`w-full flex items-center gap-3 px-4 py-3.5 rounded-2xl font-black text-xs transition-all duration-200 ${activeTab === item.id ? 'bg-indigo-600 text-white shadow-lg shadow-indigo-200 translate-x-[-4px]' : 'text-slate-500 hover:bg-slate-50 dark:hover:bg-white/5 hover:text-indigo-600'}`}
+                  >
+                      <span className="text-lg">{item.icon}</span>
+                      <span>{item.label}</span>
+                  </button>
+              ))}
+          </nav>
+
+          <div className="absolute bottom-0 right-0 w-full p-4 border-t dark:border-white/5 bg-slate-50 dark:bg-slate-900/50">
+              <div className="flex items-center gap-3 p-3 bg-white dark:bg-white/5 rounded-2xl border border-slate-100 dark:border-white/10">
+                  <div className="w-8 h-8 bg-indigo-100 text-indigo-600 rounded-full flex items-center justify-center text-xs font-black">👤</div>
+                  <div className="text-right overflow-hidden">
+                      <p className="text-[10px] font-black truncate">{user.fullName}</p>
+                      <p className="text-[8px] text-slate-400 font-bold truncate">{user.email}</p>
+                  </div>
+              </div>
+          </div>
+      </aside>
+
+      {/* Main Content */}
+      <main className={`flex-1 transition-all duration-300 ${isSidebarOpen ? 'mr-64' : 'mr-0'} p-4 lg:p-8 max-w-full overflow-hidden`}>
+          
+          {/* Mobile Toggle & Header */}
+          <div className="flex justify-between items-center mb-8 lg:hidden">
+              <h1 className="font-black text-lg text-indigo-900 dark:text-white">لوحة التحكم</h1>
+              <button onClick={() => setIsSidebarOpen(!isSidebarOpen)} className="p-3 bg-white dark:bg-white/5 rounded-2xl shadow-sm text-indigo-600 border dark:border-white/10">
+                  {isSidebarOpen ? '✕' : '☰'}
+              </button>
+          </div>
+
+          {/* Desktop Toggle (Floating) */}
+          <button 
+              onClick={() => setIsSidebarOpen(!isSidebarOpen)} 
+              className={`hidden lg:flex fixed top-6 ${isSidebarOpen ? 'right-60' : 'right-6'} z-[60] w-10 h-10 bg-white dark:bg-slate-800 rounded-full shadow-xl border border-slate-100 dark:border-white/10 items-center justify-center text-indigo-600 transition-all duration-300 hover:scale-110 active:scale-95`}
+          >
+              {isSidebarOpen ? '→' : '←'}
+          </button>
+
+      <div className="max-w-7xl mx-auto space-y-8">
       
       {/* Hidden Container for PDF Generation */}
-      {/* Positioned off-screen to ensure visibility for html2canvas but hidden from user */}
-      <div id="pdf-generator-container" style={{ 
-          position: 'absolute', 
-          left: '-9999px', 
-          top: 0,
-          width: '290mm', // A4 Landscape width
-          minHeight: '210mm',
-          backgroundColor: '#ffffff', 
-          color: '#000000', 
-          padding: '20px', 
-          direction: 'rtl', 
-          fontFamily: 'Cairo, sans-serif',
-          zIndex: -50
-      }}>
-        <div style={{ borderBottom: '2px solid #000', paddingBottom: '20px', marginBottom: '20px', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+      <div style={{ height: 0, overflow: 'hidden', position: 'absolute' }}>
+        <div id="pdf-generator-container" style={{ 
+            width: '290mm', // A4 Landscape width
+            minHeight: '210mm',
+            backgroundColor: '#ffffff', 
+            color: '#000000', 
+            padding: '20px', 
+            direction: 'rtl', 
+            fontFamily: 'Cairo, sans-serif',
+        }}>
+          <div style={{ borderBottom: '2px solid #000', paddingBottom: '20px', marginBottom: '20px', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
              <div style={{ display: 'flex', alignItems: 'center', gap: '15px' }}>
                  <div style={{ fontSize: '24px', fontWeight: 'bold', backgroundColor: '#000', color: '#fff', width: '50px', height: '50px', display: 'flex', alignItems: 'center', justifyContent: 'center', borderRadius: '8px' }}>Q</div>
                  <div>
@@ -420,8 +510,9 @@ const AgentDashboard: React.FC<{ user: Agent }> = ({ user }) => {
             <p>تم استخراج هذا التقرير من نظام كوانتوم واي فاي</p>
         </div>
       </div>
+    </div>
 
-      {/* Header */}
+      {/* Financial Summary Card */}
       <div className="glass-card p-6 rounded-[3rem] bg-indigo-950 text-white flex flex-wrap justify-between items-center relative overflow-hidden shadow-2xl print:hidden">
          <div className="absolute inset-0 bg-gradient-to-br from-indigo-600/30 to-transparent pointer-events-none"></div>
          <div className="flex items-center gap-4 z-10">
@@ -437,28 +528,7 @@ const AgentDashboard: React.FC<{ user: Agent }> = ({ user }) => {
          </div>
       </div>
 
-      {/* Tabs */}
-      <div className="flex gap-2 overflow-x-auto no-scrollbar border-b dark:border-white/5 pb-2 print:hidden">
-         {[
-           {id: 'stats', label: 'الرئيسية', icon: '🏠'},
-           {id: 'categories', label: 'إدارة الفئات', icon: '🎫'},
-           {id: 'archive', label: 'الأرشيف', icon: '📂'},
-           {id: 'sales', label: 'المبيعات', icon: '💰'},
-           {id: 'settlements', label: 'التسويات', icon: '🏦'},
-           {id: 'settings', label: 'الإعدادات', icon: '⚙️'},
-         ].map(tab => (
-           <button 
-             key={tab.id} 
-             onClick={() => setActiveTab(tab.id as any)} 
-             className={`px-5 py-3 rounded-2xl font-black text-[10px] whitespace-nowrap transition-all flex items-center gap-2 ${activeTab === tab.id ? 'bg-indigo-600 text-white shadow-lg scale-105' : 'bg-white dark:bg-white/5 text-slate-500 hover:text-indigo-600'}`}
-           >
-             <span>{tab.icon}</span>
-             <span>{tab.label}</span>
-           </button>
-         ))}
-      </div>
-
-      {/* Content */}
+      {/* Content Area */}
       <div className="min-h-[400px]">
          
          {/* 1. STATS DASHBOARD */}
@@ -601,11 +671,30 @@ const AgentDashboard: React.FC<{ user: Agent }> = ({ user }) => {
          {/* 4. SALES / ACCOUNTING */}
          {activeTab === 'sales' && (
              <div className="space-y-4 animate-in slide-in-from-bottom-4">
+                 {/* Filter Tabs */}
+                 <div className="flex gap-2 overflow-x-auto no-scrollbar pb-2">
+                     {[
+                         { id: 'all', label: 'الكل', icon: '📋' },
+                         { id: 'customer', label: 'حسب العميل', icon: '👤' },
+                         { id: 'category', label: 'حسب الفئة', icon: '🎫' },
+                         { id: 'most_sold', label: 'الأكثر مبيعاً', icon: '🔥' },
+                     ].map(f => (
+                         <button
+                             key={f.id}
+                             onClick={() => setSalesFilter(f.id as any)}
+                             className={`px-4 py-2 rounded-xl text-[10px] font-black whitespace-nowrap transition-all flex items-center gap-2 border ${salesFilter === f.id ? 'bg-indigo-600 text-white border-indigo-600 shadow-md' : 'bg-white dark:bg-white/5 text-slate-500 border-slate-200 dark:border-white/10 hover:border-indigo-300'}`}
+                         >
+                             <span>{f.icon}</span>
+                             <span>{f.label}</span>
+                         </button>
+                     ))}
+                 </div>
+
                  {/* Header & Actions */}
                  <div className="flex flex-wrap gap-4 items-end justify-between print:hidden">
                      <div className="flex flex-wrap gap-2 items-center flex-1">
                          <div className="relative flex-1 min-w-[200px]">
-                             <input type="text" placeholder="بحث باسم العميل أو الفئة..." value={searchQuery} onChange={e => setSearchQuery(e.target.value)} className="w-full p-3 rounded-2xl bg-white dark:bg-white/5 border border-slate-200 dark:border-white/10 font-bold text-xs outline-none focus:border-indigo-500" />
+                             <input type="text" placeholder={salesFilter === 'customer' ? "بحث باسم العميل..." : salesFilter === 'category' ? "بحث باسم الفئة..." : "بحث عام..."} value={searchQuery} onChange={e => setSearchQuery(e.target.value)} className="w-full p-3 rounded-2xl bg-white dark:bg-white/5 border border-slate-200 dark:border-white/10 font-bold text-xs outline-none focus:border-indigo-500" />
                              <span className="absolute left-3 top-3 opacity-30">🔍</span>
                          </div>
                          <input type="date" value={dateRange.start} onChange={e => setDateRange({...dateRange, start: e.target.value})} className="p-3 rounded-2xl bg-white dark:bg-white/5 border border-slate-200 dark:border-white/10 font-bold text-xs outline-none" />
@@ -1018,6 +1107,8 @@ const AgentDashboard: React.FC<{ user: Agent }> = ({ user }) => {
         </div>
       )}
 
+      </div>
+      </main>
     </div>
   );
 };

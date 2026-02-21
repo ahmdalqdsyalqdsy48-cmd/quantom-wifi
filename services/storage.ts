@@ -1,6 +1,7 @@
 import { 
   User, UserRole, Agent, Category, Card, CardStatus, 
-  Order, Status, PointRequest, BankAccount, SettlementReport, AgentBankDetails
+  Order, Status, PointRequest, BankAccount, SettlementReport, AgentBankDetails,
+  SystemSettings, AgentVisibleTabs, TabConfig, AgentTabsConfig, UserTabsConfig, DynamicTab
 } from '../types';
 
 const SECRET_KEY = 'QUANTUM_WIFI_ULTRA_SECURE_KEY_2025';
@@ -29,7 +30,9 @@ const STORAGE_KEYS = {
   ADMIN_AVATAR: 'qw_admin_avatar_v1',
   ADMIN_THEME: 'qw_admin_theme_v1',
   SYSTEM_LOGS: 'qw_system_logs_v1', 
-  STAT_OFFSETS: 'qw_stat_offsets_v1'
+  STAT_OFFSETS: 'qw_stat_offsets_v1',
+  SYSTEM_SETTINGS: 'qw_system_settings',
+  NOTIFICATIONS: 'qw_notifications_v1'
 };
 
 export interface SystemLog {
@@ -308,6 +311,201 @@ export const StorageService = {
   },
   deleteBankAccount: (id: string) => setDB(STORAGE_KEYS.BANKS, getDB<BankAccount[]>(STORAGE_KEYS.BANKS, []).filter(b => b.id !== id)),
   decryptCardCode: (val: string) => Security.decrypt(val),
-  registerUser: (data: any) => setDB(STORAGE_KEYS.USERS, [...getDB<User[]>(STORAGE_KEYS.USERS, []), { ...data, id: `U-${Date.now()}`, pointsBalance: 0, isActive: true, status: 'ACTIVE', createdAt: new Date().toISOString(), password: Security.hashPassword(data.password) }])
+  registerUser: (data: any) => setDB(STORAGE_KEYS.USERS, [...getDB<User[]>(STORAGE_KEYS.USERS, []), { ...data, id: `U-${Date.now()}`, pointsBalance: 0, isActive: true, status: 'ACTIVE', createdAt: new Date().toISOString(), password: Security.hashPassword(data.password) }]),
+
+  // === System Settings ===
+  getDefaultAgentTabs: (): AgentTabsConfig => ({
+    tabs: [
+      { id: 'stats', label: 'الرئيسية', icon: '🏠', enabled: true },
+      { id: 'categories', label: 'إدارة الفئات', icon: '🎫', enabled: true },
+      { id: 'archive', label: 'الأرشيف', icon: '📂', enabled: true },
+      { id: 'sales', label: 'المبيعات', icon: '💰', enabled: true },
+      { id: 'settlements', label: 'التسويات', icon: '🏦', enabled: true },
+      { id: 'settings', label: 'الإعدادات', icon: '⚙️', enabled: true },
+    ]
+  }),
+
+  getDefaultUserTabs: (): UserTabsConfig => ({
+    tabs: [
+      { id: 'dashboard', label: 'الرئيسية', icon: '🏠', contentType: 'dashboard', content: {}, enabled: true, order: 0 },
+      { id: 'shopping', label: 'تسوق الآن', icon: '🛒', contentType: 'builtin', content: { type: 'shopping' }, enabled: true, order: 1 },
+      { id: 'user_wallet', label: 'محفظتي', icon: '💳', contentType: 'user_wallet', content: {}, enabled: true, order: 2 },
+      { id: 'purchased_cards', label: 'كروتي', icon: '🎫', contentType: 'purchased_cards', content: {}, enabled: true, order: 3 },
+      { id: 'settings', label: 'إعدادات الأمان', icon: '🔐', contentType: 'builtin', content: { type: 'settings' }, enabled: true, order: 4 },
+    ]
+  }),
+
+  getDefaultDashboardLayout: (): UserDashboardLayout => ({
+    sections: [
+      {
+        id: 'main',
+        label: 'الرئيسية',
+        icon: '🏠',
+        order: 0,
+        enabled: true,
+        subTabs: [
+          { id: 'home', label: 'لوحة المعلومات', icon: '📊', contentType: 'dashboard', content: {}, enabled: true, order: 0 }
+        ]
+      },
+      {
+        id: 'shop',
+        label: 'المتجر',
+        icon: '🛒',
+        order: 1,
+        enabled: true,
+        subTabs: [
+          { id: 'buy', label: 'تسوق الآن', icon: '🛍️', contentType: 'builtin', content: { type: 'shopping' }, enabled: true, order: 0 }
+        ]
+      },
+      {
+        id: 'wallet_section',
+        label: 'المحفظة',
+        icon: '💳',
+        order: 2,
+        enabled: true,
+        subTabs: [
+          { id: 'wallet', label: 'محفظتي', icon: '💰', contentType: 'user_wallet', content: {}, enabled: true, order: 0 },
+          { id: 'history', label: 'سجل العمليات', icon: '📜', contentType: 'transactions_list', content: {}, enabled: true, order: 1 }
+        ]
+      },
+      {
+        id: 'cards_section',
+        label: 'كروتي',
+        icon: '🎫',
+        order: 3,
+        enabled: true,
+        subTabs: [
+          { id: 'my_cards', label: 'الكروت المشتراة', icon: '📇', contentType: 'purchased_cards', content: {}, enabled: true, order: 0 }
+        ]
+      },
+      {
+        id: 'account',
+        label: 'الحساب',
+        icon: '👤',
+        order: 4,
+        enabled: true,
+        subTabs: [
+          { id: 'security', label: 'إعدادات الأمان', icon: '🔐', contentType: 'builtin', content: { type: 'settings' }, enabled: true, order: 0 }
+        ]
+      }
+    ]
+  }),
+
+  getSystemSettings: (): SystemSettings => {
+    const defaultSettings: SystemSettings = {
+      maintenance: false,
+      announcement: '',
+      agentTabs: StorageService.getDefaultAgentTabs(),
+      userTabs: StorageService.getDefaultUserTabs(),
+      dashboardLayout: StorageService.getDefaultDashboardLayout(),
+      agentVisibleTabs: {
+        stats: true,
+        categories: true,
+        archive: true,
+        sales: true,
+        settlements: true,
+        settings: true,
+      }
+    };
+    const saved = localStorage.getItem(STORAGE_KEYS.SYSTEM_SETTINGS);
+    if (saved) {
+      const parsed = JSON.parse(saved);
+      return {
+        ...defaultSettings,
+        ...parsed,
+        agentTabs: { ...defaultSettings.agentTabs, ...parsed.agentTabs },
+        userTabs: { ...defaultSettings.userTabs, ...parsed.userTabs },
+        dashboardLayout: parsed.dashboardLayout || defaultSettings.dashboardLayout,
+      };
+    }
+    return defaultSettings;
+  },
+
+  saveSystemSettings: (settings: SystemSettings): void => {
+    localStorage.setItem(STORAGE_KEYS.SYSTEM_SETTINGS, JSON.stringify(settings));
+  },
+
+  updateAgentTabs: (newTabs: TabConfig[]): void => {
+    const settings = StorageService.getSystemSettings();
+    settings.agentTabs.tabs = newTabs;
+    StorageService.saveSystemSettings(settings);
+  },
+
+  updateUserTabs: (newTabs: DynamicTab[]): void => {
+    const settings = StorageService.getSystemSettings();
+    settings.userTabs.tabs = newTabs;
+    StorageService.saveSystemSettings(settings);
+  },
+
+  addUserTab: (tab: Omit<DynamicTab, 'id'>): void => {
+    const settings = StorageService.getSystemSettings();
+    const newTab: DynamicTab = {
+      ...tab,
+      id: `tab_${Date.now()}`,
+      order: settings.userTabs.tabs.length
+    };
+    settings.userTabs.tabs.push(newTab);
+    StorageService.saveSystemSettings(settings);
+  },
+
+  updateUserTab: (id: string, updates: Partial<DynamicTab>): void => {
+    const settings = StorageService.getSystemSettings();
+    settings.userTabs.tabs = settings.userTabs.tabs.map(t => t.id === id ? { ...t, ...updates } : t);
+    StorageService.saveSystemSettings(settings);
+  },
+
+  deleteUserTab: (id: string): void => {
+    const settings = StorageService.getSystemSettings();
+    settings.userTabs.tabs = settings.userTabs.tabs.filter(t => t.id !== id);
+    StorageService.saveSystemSettings(settings);
+  },
+
+  reorderUserTabs: (tabs: DynamicTab[]): void => {
+    const settings = StorageService.getSystemSettings();
+    settings.userTabs.tabs = tabs.map((t, i) => ({ ...t, order: i }));
+    StorageService.saveSystemSettings(settings);
+  },
+
+  updateDashboardLayout: (layout: UserDashboardLayout): void => {
+    const settings = StorageService.getSystemSettings();
+    settings.dashboardLayout = layout;
+    StorageService.saveSystemSettings(settings);
+  },
+
+  // === Notifications ===
+  getNotifications: (userId?: string) => {
+    const all = getDB<any[]>(STORAGE_KEYS.NOTIFICATIONS, []);
+    return userId ? all.filter(n => n.userId === userId || n.userId === 'all') : all;
+  },
+
+  addNotification: (userId: string | 'all', title: string, message: string, type: 'info' | 'success' | 'warning' = 'info') => {
+    const all = getDB<any[]>(STORAGE_KEYS.NOTIFICATIONS, []);
+    const newNotif = {
+      id: `NOT-${Date.now()}`,
+      userId,
+      title,
+      message,
+      type,
+      read: false,
+      createdAt: new Date().toISOString()
+    };
+    setDB(STORAGE_KEYS.NOTIFICATIONS, [newNotif, ...all]);
+  },
+
+  markNotificationRead: (id: string) => {
+    const all = getDB<any[]>(STORAGE_KEYS.NOTIFICATIONS, []);
+    setDB(STORAGE_KEYS.NOTIFICATIONS, all.map(n => n.id === id ? { ...n, read: true } : n));
+  },
+
+  markAllNotificationsRead: (userId: string) => {
+    const all = getDB<any[]>(STORAGE_KEYS.NOTIFICATIONS, []);
+    setDB(STORAGE_KEYS.NOTIFICATIONS, all.map(n => (n.userId === userId || n.userId === 'all') ? { ...n, read: true } : n));
+  },
+
+  updateAgentVisibleTabs: (tabs: Partial<AgentVisibleTabs>): void => {
+    const settings = StorageService.getSystemSettings();
+    settings.agentVisibleTabs = { ...settings.agentVisibleTabs, ...tabs };
+    StorageService.saveSystemSettings(settings);
+  }
 };
 StorageService.init();
