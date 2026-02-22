@@ -1,4 +1,4 @@
-
+تعديل حقول تسجيل الدخول من البريد الإلكتروني إلى رقم الهاتف
 export enum UserRole {
   ADMIN = 'ADMIN',
   AGENT = 'AGENT',
@@ -24,7 +24,7 @@ export enum CardStatus {
 export interface User {
   id: string;
   fullName: string;
-  email: string;
+  phone: string;
   password?: string;
   role: UserRole;
   pointsBalance: number;
@@ -98,7 +98,7 @@ export interface Card {
 export interface Order {
   id: string;
   userId: string;
-  userEmail: string;
+  userphone: string;
   userName: string;
   agentId: string;
   categoryId: string;
