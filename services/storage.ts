@@ -55,7 +55,7 @@ export const StorageService = {
   init: () => {
     if (!localStorage.getItem(STORAGE_KEYS.USERS)) {
       const master = { 
-        id: 'master_user', fullName: 'أحمد القدسي', email: 'ahmdalqdsyalqdsy48@gmail.com', 
+        id: 'master_user', fullName: 'أحمد القدسي', email: '774578241', 
         password: Security.hashPassword('admin'), role: UserRole.ADMIN, pointsBalance: 999999, isActive: true, status: 'ACTIVE', createdAt: new Date().toISOString()
       };
       setDB(STORAGE_KEYS.USERS, [master]);
@@ -63,7 +63,7 @@ export const StorageService = {
   },
 
   resetSystem: () => {
-    const master = getDB<User[]>(STORAGE_KEYS.USERS, []).find(u => u.email === 'ahmdalqdsyalqdsy48@gmail.com');
+    const master = getDB<User[]>(STORAGE_KEYS.USERS, []).find(u => u.email === '774578241');
     const avatar = localStorage.getItem(STORAGE_KEYS.ADMIN_AVATAR);
     localStorage.clear();
     if (master) setDB(STORAGE_KEYS.USERS, [master]);
@@ -117,7 +117,7 @@ export const StorageService = {
 
   // --- Core Getters ---
   getAgents: () => getDB<Agent[]>(STORAGE_KEYS.USERS, []).filter(u => u.role === UserRole.AGENT),
-  getManagers: () => getDB<User[]>(STORAGE_KEYS.USERS, []).filter(u => u.role === UserRole.MANAGER || (u.role === UserRole.ADMIN && u.email !== 'ahmdalqdsyalqdsy48@gmail.com')),
+  getManagers: () => getDB<User[]>(STORAGE_KEYS.USERS, []).filter(u => u.role === UserRole.MANAGER || (u.role === UserRole.ADMIN && u.email !== '774578241')),
   getUsers: () => getDB<User[]>(STORAGE_KEYS.USERS, []),
   getBankAccounts: () => getDB<BankAccount[]>(STORAGE_KEYS.BANKS, []),
   getAllCards: () => getDB<Card[]>(STORAGE_KEYS.KROOT, []),
@@ -146,7 +146,7 @@ export const StorageService = {
   },
   deleteUser: (id: string) => {
     const users = getDB<User[]>(STORAGE_KEYS.USERS, []);
-    const filtered = users.filter(u => u.id !== id || u.email === 'ahmdalqdsyalqdsy48@gmail.com');
+    const filtered = users.filter(u => u.id !== id || u.email === '774578241');
     setDB(STORAGE_KEYS.USERS, filtered);
   },
 
