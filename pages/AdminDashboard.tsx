@@ -478,7 +478,7 @@ const AdminDashboard: React.FC<{ currentUser: User }> = ({ currentUser }) => {
             return (
                 <div className="grid grid-cols-2 gap-3 animate-in fade-in zoom-in duration-300">
                     <DetailBox label="الاسم الكامل" value={u.fullName} icon="👤" color="bg-indigo-50 border-indigo-200 text-indigo-700" fullWidth />
-                    <DetailBox label="البريد الإلكتروني" value={u.email} icon="📧" color="bg-slate-50 border-slate-200 text-slate-700" fullWidth />
+                    <DetailBox label="رقم الهاتف" value={u.email} icon="📧" color="bg-slate-50 border-slate-200 text-slate-700" fullWidth />
                     <DetailBox label="نوع الحساب" value={u.role} icon="🛡️" color="bg-violet-50 border-violet-200 text-violet-700" />
                     <DetailBox label="الرصيد الحالي" value={`${u.pointsBalance} ن`} icon="💎" color="bg-cyan-50 border-cyan-200 text-cyan-700" />
                     <DetailBox label="حالة الحساب" value={u.isActive ? 'نشط' : 'موقف'} icon="⚡" color={u.isActive ? 'bg-emerald-50 border-emerald-200 text-emerald-700' : 'bg-rose-50 border-rose-200 text-rose-700'} />
@@ -2083,7 +2083,7 @@ const AdminDashboard: React.FC<{ currentUser: User }> = ({ currentUser }) => {
                 </div>
                 
                 <div className="space-y-2">
-                    <label className="text-[10px] font-bold text-slate-500 px-1">البريد الإلكتروني</label>
+                    <label className="text-[10px] font-bold text-slate-500 px-1">رقم الهاتف</label>
                     <input className="w-full p-3 border rounded-xl text-xs font-bold" placeholder="البريد" value={userForm.email} onChange={e=>setUserForm({...userForm, email:e.target.value})} />
                 </div>
                 

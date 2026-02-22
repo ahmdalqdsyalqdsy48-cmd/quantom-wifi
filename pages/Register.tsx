@@ -42,7 +42,7 @@ const Register: React.FC = () => {
           />
         </div>
         <div>
-          <label className="block text-xs font-bold text-slate-500 dark:text-slate-500 mb-2 uppercase tracking-widest px-1">البريد الإلكتروني</label>
+          <label className="block text-xs font-bold text-slate-500 dark:text-slate-500 mb-2 uppercase tracking-widest px-1">رقم الهاتف</label>
           <input 
             type="email" 
             required

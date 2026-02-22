@@ -58,7 +58,7 @@ const Login: React.FC<LoginProps> = ({ onLogin }) => {
         <h2 className="text-3xl font-black mb-2 text-center text-slate-900 dark:text-white tracking-tight">الدخول الآمن</h2>
         <form onSubmit={handleSubmit} className="space-y-5">
           <div>
-            <label className="block text-xs font-bold text-slate-500 mb-2 uppercase tracking-widest px-1">البريد الإلكتروني</label>
+            <label className="block text-xs font-bold text-slate-500 mb-2 uppercase tracking-widest px-1">رقم الهاتف</label>
             <input 
               type="email" 
               value={email}
