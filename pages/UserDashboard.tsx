@@ -1,13 +1,18 @@
 
 import React, { useState, useEffect, useMemo } from 'react';
-import { User, Category, Order, Agent, BankAccount, CardStatus, Status, TabConfig, DynamicTab, ContentType } from '../types';
+import { 
+  User, Category, Order, Agent, BankAccount, 
+  CardStatus, Status, PointRequest 
+} from '../types';
 import { StorageService } from '../services/storage';
 import { useNotification } from '../components/Layout';
 import { 
   Search, Download, Eye, EyeOff, Copy, Wallet, 
   History, CreditCard, Bell, LifeBuoy, BarChart3, 
   ArrowUpRight, ArrowDownLeft, Filter, ChevronLeft, ChevronRight,
-  Star, Info, CheckCircle2, AlertCircle, Menu, X, LogOut, Settings
+  Star, Info, CheckCircle2, AlertCircle, Menu, X, LogOut, Settings,
+  ShoppingBag, Heart, MessageSquare, PieChart as PieChartIcon,
+  User as UserIcon, Lock, Share2
 } from 'lucide-react';
 import { 
   BarChart, Bar, XAxis, YAxis, CartesianGrid, 
@@ -28,1185 +33,852 @@ interface UserDashboardProps {
 
 const UserDashboard: React.FC<UserDashboardProps> = ({ user, onUpdate }) => {
   const { showNotification } = useNotification();
-  const [activeSectionId, setActiveSectionId] = useState<string>('');
-  const [activeSubTabId, setActiveSubTabId] = useState<string>('');
+  const [activeSection, setActiveSection] = useState<'home' | 'wallet' | 'transactions' | 'favorites' | 'support' | 'reports' | 'settings'>('home');
   const [isSidebarOpen, setIsSidebarOpen] = useState(false);
+  
+  // Data State
   const [agents, setAgents] = useState<Agent[]>([]);
   const [categories, setCategories] = useState<Category[]>([]);
   const [orders, setOrders] = useState<Order[]>([]);
-  const [pointsRequests, setPointsRequests] = useState<any[]>([]);
+  const [deposits, setDeposits] = useState<PointRequest[]>([]);
   const [notifications, setNotifications] = useState<any[]>([]);
-  const [selectedAgent, setSelectedAgent] = useState<Agent | null>(null);
   const [banks, setBanks] = useState<BankAccount[]>([]);
-  const [searchQuery, setSearchQuery] = useState('');
+  const [systemSettings, setSystemSettings] = useState(StorageService.getSystemSettings());
   
-  // Modals
+  // UI State
+  const [selectedAgent, setSelectedAgent] = useState<Agent | null>(null);
   const [showPointsModal, setShowPointsModal] = useState(false);
   const [showConfirm, setShowConfirm] = useState<{ cat: Category, qty: number } | null>(null);
   const [revealed, setRevealed] = useState<Record<string, boolean>>({});
-  const [layout, setLayout] = useState<any>(null);
+  const [searchQuery, setSearchQuery] = useState('');
+  const [txTypeFilter, setTxTypeFilter] = useState<'all' | 'purchase' | 'deposit'>('all');
+  const [txDateFilter, setTxDateFilter] = useState('');
   
   // Forms
-  const [form, setForm] = useState({ amount: '', method: '', ref: '', client: '' });
+  const [topupForm, setTopupForm] = useState({ amount: '', method: '', ref: '', client: '' });
+  const [passForm, setPassForm] = useState({ new: '', confirm: '' });
   const [qtyMap, setQtyMap] = useState<Record<string, number>>({});
   const [stockMap, setStockMap] = useState<Record<string, number>>({});
-  const [passForm, setPassForm] = useState({ new: '', confirm: '' });
 
   const refreshData = () => {
-    const activeAgents = StorageService.getAgents().filter(a => a.isActive);
-    setAgents(activeAgents);
-    const userOrders = StorageService.getOrders(user.id, user.role);
-    setOrders(userOrders);
-    setPointsRequests(StorageService.getPointsRequests().filter(r => r.userId === user.id));
+    const allAgents = StorageService.getAgents().filter(a => a.isActive);
+    setAgents(allAgents);
+    setOrders(StorageService.getOrders(user.id, user.role));
+    setDeposits(StorageService.getUserDeposits(user.id));
     setNotifications(StorageService.getNotifications(user.id));
     setBanks(StorageService.getBankAccounts().filter(b => b.isActive));
+    setSystemSettings(StorageService.getSystemSettings());
 
-    const res = JSON.parse(localStorage.getItem('qw_kroot_v2') || '[]');
+    // Stock calculation
+    const allCards = JSON.parse(localStorage.getItem('qw_kroot_v2') || '[]');
     const counts: Record<string, number> = {};
-    res.forEach((k: any) => {
-       if (k.status === CardStatus.AVAILABLE) counts[k.categoryId] = (counts[k.categoryId] || 0) + 1;
+    allCards.forEach((k: any) => {
+      if (k.status === CardStatus.AVAILABLE) {
+        counts[k.categoryId] = (counts[k.categoryId] || 0) + 1;
+      }
     });
     setStockMap(counts);
   };
 
-  useEffect(() => { refreshData(); }, [user.id, user.pointsBalance]);
-
   useEffect(() => {
-    const settings = StorageService.getSystemSettings();
-    const dashboardLayout = settings.dashboardLayout || StorageService.getDefaultDashboardLayout();
-    const enabledSections = dashboardLayout.sections.filter(s => s.enabled).sort((a, b) => a.order - b.order);
-    
-    setLayout({ sections: enabledSections });
-    
-    if (enabledSections.length > 0) {
-      if (!activeSectionId || !enabledSections.some(s => s.id === activeSectionId)) {
-        const firstSection = enabledSections[0];
-        setActiveSectionId(firstSection.id);
-        const firstSubTab = firstSection.subTabs.filter(st => st.enabled).sort((a, b) => a.order - b.order)[0];
-        if (firstSubTab) setActiveSubTabId(firstSubTab.id);
-      }
-    }
-  }, [activeSectionId]);
+    refreshData();
+  }, [user.id, user.pointsBalance]);
 
-  const activeSection = layout?.sections.find((s: any) => s.id === activeSectionId);
-  const activeSubTab = activeSection?.subTabs.find((st: any) => st.id === activeSubTabId) || activeSection?.subTabs[0];
+  // Derived Data
+  const favoriteAgents = useMemo(() => {
+    return agents.filter(a => user.favorites?.includes(a.id));
+  }, [agents, user.favorites]);
 
+  const transactions = useMemo(() => {
+    const combined = [
+      ...orders.map(o => ({
+        id: o.id,
+        date: o.createdAt,
+        type: 'purchase' as const,
+        title: `شراء كرت ${o.networkName}`,
+        detail: o.categoryName,
+        amount: -o.pointsUsed,
+        status: o.status,
+        ref: StorageService.decryptCardCode(o.cardNumber!)
+      })),
+      ...deposits.map(d => ({
+        id: d.id,
+        date: d.createdAt,
+        type: 'deposit' as const,
+        title: `شحن رصيد (${d.paymentMethod})`,
+        detail: d.recipientName,
+        amount: d.amount,
+        status: d.status,
+        ref: d.referenceNumber
+      }))
+    ].sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime());
+
+    return combined.filter(t => {
+      const matchType = txTypeFilter === 'all' || t.type === txTypeFilter;
+      const matchDate = !txDateFilter || t.date.startsWith(txDateFilter);
+      const matchSearch = !searchQuery || 
+        t.title.toLowerCase().includes(searchQuery.toLowerCase()) || 
+        t.ref.toLowerCase().includes(searchQuery.toLowerCase());
+      return matchType && matchDate && matchSearch;
+    });
+  }, [orders, deposits, txTypeFilter, txDateFilter, searchQuery]);
+
+  // Handlers
   const handleBuy = async () => {
     if (!showConfirm) return;
     const res = await StorageService.createOrder(user.id, showConfirm.cat.id, showConfirm.qty);
-    if (typeof res === 'string') showNotification(res, 'error');
-    else {
+    if (typeof res === 'string') {
+      showNotification(res, 'error');
+    } else {
       showNotification('تمت عملية الشراء بنجاح! ✅', 'success');
-      onUpdate(); setShowConfirm(null); refreshData();
+      onUpdate();
+      setShowConfirm(null);
+      refreshData();
     }
   };
 
   const handleUpdatePassword = () => {
-    if (!passForm.new || passForm.new !== passForm.confirm) return showNotification('كلمات المرور غير متطابقة', 'error');
+    if (!passForm.new || passForm.new !== passForm.confirm) {
+      return showNotification('كلمات المرور غير متطابقة', 'error');
+    }
     StorageService.updatePassword(user.id, passForm.new);
-    showNotification('تم تحديث كلمة المرور بنجاح ✅');
+    showNotification('تم تحديث كلمة المرور بنجاح ✅', 'success');
     setPassForm({ new: '', confirm: '' });
   };
 
-  const handleQtyChange = (catId: string, val: string, max: number) => {
-    let num = parseInt(val) || 0;
-    if (num < 0) num = 1;
-    if (num > max) num = max;
-    setQtyMap({...qtyMap, [catId]: num});
-  };
-
-  const filteredAgents = agents.filter(a => a.networkName.includes(searchQuery));
-  const filteredCategories = categories.filter(c => c.name.includes(searchQuery));
-  const filteredOrders = orders.filter(o => o.networkName.includes(searchQuery));
-  const selectedBank = banks.find(b => b.bankName === form.method);
-
-  const handleMarkRead = (id: string) => {
-    StorageService.markNotificationRead(id);
+  const toggleFavorite = (agentId: string) => {
+    StorageService.toggleFavorite(user.id, agentId);
+    onUpdate();
     refreshData();
   };
 
-  const handleMarkAllRead = () => {
-    StorageService.markAllNotificationsRead(user.id);
-    refreshData();
-  };
-
-  const handleExportCSV = (data: any[], filename: string) => {
-    if (!data || data.length === 0) return;
-    const headers = Object.keys(data[0]).join(',');
-    const rows = data.map(row => 
-      Object.values(row).map(val => `"${val}"`).join(',')
-    ).join('\n');
-    const csvContent = `\ufeff${headers}\n${rows}`;
+  const exportCSV = () => {
+    const headers = ['التاريخ', 'النوع', 'البيان', 'المبلغ', 'الحالة', 'المرجع'];
+    const rows = transactions.map(t => [
+      new Date(t.date).toLocaleString('ar-YE'),
+      t.type === 'purchase' ? 'شراء' : 'شحن',
+      t.title,
+      t.amount,
+      t.status,
+      t.ref
+    ]);
+    
+    const csvContent = "\uFEFF" + headers.join(",") + "\n"
+      + rows.map(e => e.join(",")).join("\n");
+    
     const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
-    const link = document.createElement('a');
-    link.href = URL.createObjectURL(blob);
-    link.setAttribute('download', `${filename}.csv`);
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement("a");
+    link.setAttribute("href", url);
+    link.setAttribute("download", `transactions_${user.fullName}.csv`);
     document.body.appendChild(link);
     link.click();
     document.body.removeChild(link);
+    URL.revokeObjectURL(url);
   };
 
-  // --- Helper Components ---
-  const StatCard = ({ title, value, icon: Icon, color }: { title: string, value: string | number, icon: any, color: string }) => (
-    <div className={cn("glass-card p-6 rounded-[2rem] border bg-white dark:bg-white/5 flex items-center gap-4", color)}>
-      <div className="p-3 rounded-2xl bg-white/20">
-        <Icon size={24} className="text-white" />
+  // Components
+  const StatCard = ({ title, value, icon: Icon, color }: any) => (
+    <div className="glass-card p-6 rounded-[2rem] border bg-white dark:bg-white/5 flex items-center gap-4 shadow-sm">
+      <div className={cn("p-4 rounded-2xl", color)}>
+        <Icon size={24} />
       </div>
       <div>
-        <p className="text-[10px] font-black opacity-70 uppercase tracking-widest">{title}</p>
-        <h3 className="text-2xl font-black">{value}</h3>
+        <p className="text-[10px] font-black text-slate-400 uppercase tracking-widest">{title}</p>
+        <p className="text-xl font-black text-slate-900 dark:text-white">{value}</p>
       </div>
     </div>
   );
 
-  const DataTable = ({ data, columns, filename, searchPlaceholder }: { data: any[], columns: any[], filename: string, searchPlaceholder?: string }) => {
-    const [localSearch, setLocalSearch] = useState('');
-    const [page, setPage] = useState(1);
-    const pageSize = 10;
-
-    const filtered = useMemo(() => {
-      return data.filter(item => 
-        Object.values(item).some(val => 
-          String(val).toLowerCase().includes(localSearch.toLowerCase())
-        )
-      );
-    }, [data, localSearch]);
-
-    const paginated = filtered.slice((page - 1) * pageSize, page * pageSize);
-    const totalPages = Math.ceil(filtered.length / pageSize);
-
-    return (
-      <div className="space-y-4">
-        <div className="flex flex-col sm:flex-row justify-between gap-4">
-          <div className="relative flex-1 max-w-md">
-            <Search className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-400" size={16} />
-            <input 
-              type="text" 
-              placeholder={searchPlaceholder || "بحث..."} 
-              value={localSearch}
-              onChange={e => { setLocalSearch(e.target.value); setPage(1); }}
-              className="w-full pr-10 pl-4 py-2 bg-slate-50 dark:bg-slate-900 border rounded-xl text-xs outline-none focus:border-indigo-500"
-            />
-          </div>
-          <button onClick={() => handleExportCSV(filtered, filename)} className="flex items-center gap-2 px-4 py-2 bg-emerald-600 text-white rounded-xl text-[10px] font-black shadow-md hover:bg-emerald-700 transition-all">
-            <Download size={14} /> تصدير CSV
-          </button>
-        </div>
-
-        <div className="glass-card rounded-[2rem] overflow-hidden border bg-white dark:bg-white/5">
-          <div className="overflow-x-auto">
-            <table className="w-full text-right text-[10px]">
-              <thead className="bg-slate-50 dark:bg-white/5 font-black text-slate-500">
-                <tr>
-                  {columns.map((col, i) => <th key={i} className="p-4">{col.header}</th>)}
-                </tr>
-              </thead>
-              <tbody className="divide-y divide-slate-100 dark:divide-white/5 font-bold">
-                {paginated.map((row, i) => (
-                  <tr key={i} className="hover:bg-slate-50 dark:hover:bg-white/5 transition-colors">
-                    {columns.map((col, j) => (
-                      <td key={j} className="p-4">
-                        {col.render ? col.render(row) : row[col.key]}
-                      </td>
-                    ))}
-                  </tr>
-                ))}
-                {paginated.length === 0 && (
-                  <tr>
-                    <td colSpan={columns.length} className="p-12 text-center text-slate-400 font-bold">لا توجد بيانات متاحة</td>
-                  </tr>
-                )}
-              </tbody>
-            </table>
-          </div>
-        </div>
-
-        {totalPages > 1 && (
-          <div className="flex justify-center items-center gap-4 pt-2">
-            <button 
-              disabled={page === 1} 
-              onClick={() => setPage(p => p - 1)}
-              className="p-2 rounded-lg bg-slate-100 dark:bg-white/5 disabled:opacity-20"
-            >
-              <ChevronRight size={16} />
-            </button>
-            <span className="text-[10px] font-black">صفحة {page} من {totalPages}</span>
-            <button 
-              disabled={page === totalPages} 
-              onClick={() => setPage(p => p + 1)}
-              className="p-2 rounded-lg bg-slate-100 dark:bg-white/5 disabled:opacity-20"
-            >
-              <ChevronLeft size={16} />
-            </button>
-          </div>
-        )}
-      </div>
-    );
-  };
-
-  const DynamicTabContent: React.FC<{ tab: DynamicTab }> = ({ tab }) => {
-    const userPurchases = orders;
-    const userDeposits = pointsRequests;
-    
-    const totalSpent = userPurchases.reduce((sum, o) => sum + o.pointsUsed, 0);
-    const totalDeposited = userDeposits
-      .filter(r => r.status === Status.COMPLETED)
-      .reduce((sum, r) => sum + r.amount, 0);
-    
-    const networkStats = userPurchases.reduce((acc: any, o) => {
-      if (!acc[o.networkName]) acc[o.networkName] = { count: 0, points: 0 };
-      acc[o.networkName].count += 1;
-      acc[o.networkName].points += o.pointsUsed;
-      return acc;
-    }, {});
-
-    const transactions = [
-      ...userPurchases.map(p => ({
-        id: p.id,
-        date: p.createdAt,
-        type: 'شراء',
-        detail: p.networkName,
-        subDetail: p.categoryName,
-        amount: p.pointsUsed,
-        ref: StorageService.decryptCardCode(p.cardNumber!),
-        raw: p
-      })),
-      ...userDeposits.map(d => ({
-        id: d.id,
-        date: d.createdAt,
-        type: 'شحن',
-        detail: d.bankName,
-        subDetail: d.status,
-        amount: d.amount,
-        ref: d.referenceNumber,
-        raw: d
-      }))
-    ].sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime());
-
-    switch (tab.contentType) {
-      case 'dashboard':
-        return (
-          <div className="space-y-6">
-            <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-              <StatCard title="الرصيد الحالي" value={`${user.pointsBalance} نقطة`} icon={Wallet} color="bg-indigo-600 text-white shadow-indigo-200" />
-              <StatCard title="إجمالي الشحن" value={`${totalDeposited} نقطة`} icon={ArrowUpRight} color="bg-emerald-500 text-white shadow-emerald-200" />
-              <StatCard title="إجمالي الاستهلاك" value={`${totalSpent} نقطة`} icon={ArrowDownLeft} color="bg-rose-500 text-white shadow-rose-200" />
-            </div>
-
-            <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-              <div className="glass-card p-6 rounded-[2rem] border bg-white dark:bg-white/5 space-y-4">
-                <div className="flex justify-between items-center border-b pb-2">
-                  <h4 className="font-black text-xs flex items-center gap-2"><History size={14} /> آخر العمليات</h4>
-                  <button 
-                    onClick={() => {
-                      const target = tabsConfig.find(t => t.contentType === 'transactions_list' || t.contentType === 'full_transactions');
-                      if (target) setActiveView(target.id);
-                    }} 
-                    className="text-[10px] font-black text-indigo-600 hover:underline"
-                  >
-                    عرض الكل
-                  </button>
-                </div>
-                <div className="space-y-3">
-                  {transactions.slice(0, 5).map((t, i) => (
-                    <div key={i} className="flex justify-between items-center p-3 bg-slate-50 dark:bg-slate-900 rounded-xl">
-                      <div className="flex items-center gap-3">
-                        <div className={cn("p-2 rounded-lg", t.type === 'شراء' ? "bg-rose-50 text-rose-600" : "bg-emerald-50 text-emerald-600")}>
-                          {t.type === 'شراء' ? <CreditCard size={14} /> : <ArrowUpRight size={14} />}
-                        </div>
-                        <div>
-                          <p className="font-bold text-xs">{t.type} - {t.detail}</p>
-                          <p className="text-[8px] opacity-50">{new Date(t.date).toLocaleString('ar-YE')}</p>
-                        </div>
-                      </div>
-                      <span className={cn("font-black text-xs", t.type === 'شراء' ? "text-rose-600" : "text-emerald-600")}>
-                        {t.type === 'شراء' ? '-' : '+'}{t.amount}
-                      </span>
-                    </div>
-                  ))}
-                  {transactions.length === 0 && <p className="text-center py-8 text-slate-400 font-bold">لا توجد عمليات مؤخراً</p>}
-                </div>
-              </div>
-
-              <div className="glass-card p-6 rounded-[2rem] border bg-white dark:bg-white/5 space-y-4">
-                <div className="flex justify-between items-center border-b pb-2">
-                  <h4 className="font-black text-xs flex items-center gap-2"><Bell size={14} /> الإشعارات</h4>
-                  <button 
-                    onClick={() => {
-                      const target = tabsConfig.find(t => t.contentType === 'notifications');
-                      if (target) setActiveView(target.id);
-                    }} 
-                    className="text-[10px] font-black text-indigo-600 hover:underline"
-                  >
-                    عرض الكل
-                  </button>
-                </div>
-                <div className="space-y-3">
-                  {notifications.slice(0, 5).map((n, i) => (
-                    <div key={i} className={cn("p-3 rounded-xl border transition-all", n.read ? "bg-slate-50 dark:bg-slate-900 border-transparent opacity-60" : "bg-indigo-50/30 border-indigo-100 dark:border-indigo-900/30")}>
-                      <div className="flex justify-between items-start">
-                        <h5 className="font-black text-[10px]">{n.title}</h5>
-                        <span className="text-[7px] opacity-50">{new Date(n.createdAt).toLocaleDateString('ar-YE')}</span>
-                      </div>
-                      <p className="text-[9px] font-bold mt-1 line-clamp-1">{n.message}</p>
-                    </div>
-                  ))}
-                  {notifications.length === 0 && <p className="text-center py-8 text-slate-400 font-bold">لا توجد إشعارات جديدة</p>}
-                </div>
-              </div>
-            </div>
-          </div>
-        );
-
-      case 'user_wallet':
-        return (
-          <div className="space-y-6">
-            <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-              <StatCard title="الرصيد الحالي" value={`${user.pointsBalance} نقطة`} icon={Wallet} color="bg-indigo-600 text-white" />
-              <StatCard title="إجمالي الشحن" value={`${totalDeposited} نقطة`} icon={ArrowUpRight} color="bg-emerald-500 text-white" />
-              <StatCard title="إجمالي الاستهلاك" value={`${totalSpent} نقطة`} icon={ArrowDownLeft} color="bg-rose-500 text-white" />
-            </div>
-            
-            <div className="flex justify-center">
-              <button onClick={() => setShowPointsModal(true)} className="px-8 py-4 bg-indigo-600 text-white rounded-[2rem] font-black text-sm shadow-xl hover:scale-105 transition-all flex items-center gap-2">
-                <ArrowUpRight size={20} /> شحن رصيد جديد
-              </button>
-            </div>
-
-            <div className="space-y-4">
-              <h4 className="font-black text-xs flex items-center gap-2"><History size={14} /> سجل عمليات الشحن</h4>
-              <DataTable 
-                data={userDeposits} 
-                filename="deposits"
-                searchPlaceholder="بحث في الشحنات..."
-                columns={[
-                  { header: 'التاريخ', render: (row: any) => <span className="font-mono text-[8px]">{new Date(row.createdAt).toLocaleString('ar-YE')}</span> },
-                  { header: 'البنك', key: 'bankName' },
-                  { header: 'المبلغ', render: (row: any) => <span className="font-black text-emerald-600">{row.amount}</span> },
-                  { header: 'الحالة', render: (row: any) => (
-                    <span className={cn("px-2 py-0.5 rounded-md", 
-                      row.status === Status.COMPLETED ? 'bg-emerald-50 text-emerald-600' : 
-                      row.status === Status.REJECTED ? 'bg-rose-50 text-rose-600' : 'bg-amber-50 text-amber-600'
-                    )}>{row.status}</span>
-                  )},
-                  { header: 'المرجع', render: (row: any) => <span className="font-mono text-[8px]">{row.referenceNumber}</span> }
-                ]}
-              />
-            </div>
-          </div>
-        );
-
-      case 'transactions_list':
-        return (
-          <div className="space-y-4">
-            <h4 className="font-black text-xs flex items-center gap-2"><History size={14} /> سجل العمليات الموحد</h4>
-            <DataTable 
-              data={transactions}
-              filename="all_transactions"
-              searchPlaceholder="بحث في جميع العمليات..."
-              columns={[
-                { header: 'التاريخ', render: (row: any) => <span className="font-mono text-[8px]">{new Date(row.date).toLocaleString('ar-YE')}</span> },
-                { header: 'النوع', render: (row: any) => (
-                  <span className={cn("px-2 py-0.5 rounded-md", row.type === 'شراء' ? 'bg-rose-50 text-rose-600' : 'bg-emerald-50 text-emerald-600')}>{row.type}</span>
-                )},
-                { header: 'البيان', render: (row: any) => (
-                  <div>
-                    <p className="font-bold">{row.detail}</p>
-                    <p className="text-[8px] opacity-50">{row.subDetail}</p>
-                  </div>
-                )},
-                { header: 'المبلغ', render: (row: any) => <span className={cn("font-black", row.type === 'شراء' ? 'text-rose-600' : 'text-emerald-600')}>{row.amount}</span> },
-                { header: 'المرجع', render: (row: any) => (
-                  <div className="flex items-center gap-2">
-                    <span className="font-mono text-[8px]">{revealed[row.id] ? row.ref : '••••••••••••'}</span>
-                    {row.type === 'شراء' && (
-                      <button onClick={() => setRevealed({...revealed, [row.id]: !revealed[row.id]})} className="text-slate-400 hover:text-indigo-600 transition-colors">
-                        {revealed[row.id] ? <EyeOff size={12} /> : <Eye size={12} />}
-                      </button>
-                    )}
-                  </div>
-                )}
-              ]}
-            />
-          </div>
-        );
-
-      case 'purchased_cards':
-        return (
-          <div className="space-y-4">
-            <h4 className="font-black text-xs flex items-center gap-2"><CreditCard size={14} /> الكروت المشتراة</h4>
-            <DataTable 
-              data={userPurchases}
-              filename="my_cards"
-              searchPlaceholder="بحث في الكروت..."
-              columns={[
-                { header: 'التاريخ', render: (row: any) => <span className="font-mono text-[8px]">{new Date(row.createdAt).toLocaleString('ar-YE')}</span> },
-                { header: 'الشبكة', key: 'networkName' },
-                { header: 'الفئة', key: 'categoryName' },
-                { header: 'النقاط', key: 'pointsUsed' },
-                { header: 'الكود', render: (row: any) => (
-                  <div className="flex items-center gap-2">
-                    <span className="font-mono text-[8px]">{revealed[row.id] ? StorageService.decryptCardCode(row.cardNumber!) : '••••••••••••'}</span>
-                    <button onClick={() => setRevealed({...revealed, [row.id]: !revealed[row.id]})} className="text-slate-400 hover:text-indigo-600 transition-colors">
-                      {revealed[row.id] ? <EyeOff size={12} /> : <Eye size={12} />}
-                    </button>
-                    {revealed[row.id] && (
-                      <button onClick={() => { navigator.clipboard.writeText(StorageService.decryptCardCode(row.cardNumber!)); showNotification('تم النسخ ✅'); }} className="text-indigo-600">
-                        <Copy size={12} />
-                      </button>
-                    )}
-                  </div>
-                )}
-              ]}
-            />
-          </div>
-        );
-
-      case 'favorite_networks':
-        return (
-          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
-            {Object.entries(networkStats).map(([name, stats]: [string, any]) => (
-              <div key={name} className="glass-card p-6 rounded-[2rem] border bg-white dark:bg-white/5 space-y-4 hover:shadow-lg transition-all">
-                <div className="flex justify-between items-center">
-                  <div className="flex items-center gap-3">
-                    <div className="w-10 h-10 rounded-xl bg-indigo-600/10 text-indigo-600 flex items-center justify-center text-xl">📡</div>
-                    <h4 className="font-black text-sm">{name}</h4>
-                  </div>
-                  <Star size={16} className="text-amber-400 fill-amber-400" />
-                </div>
-                <div className="grid grid-cols-2 gap-2">
-                  <div className="p-3 bg-indigo-50 dark:bg-white/5 rounded-xl text-center">
-                    <p className="text-[8px] font-black opacity-50 uppercase">الكروت</p>
-                    <p className="font-black text-indigo-600">{stats.count}</p>
-                  </div>
-                  <div className="p-3 bg-emerald-50 dark:bg-white/5 rounded-xl text-center">
-                    <p className="text-[8px] font-black opacity-50 uppercase">النقاط</p>
-                    <p className="font-black text-emerald-600">{stats.points}</p>
-                  </div>
-                </div>
-              </div>
-            ))}
-            {Object.keys(networkStats).length === 0 && (
-              <div className="col-span-full py-20 text-center text-slate-400 font-bold border-2 border-dashed rounded-[2rem]">
-                لم تقم بالشراء من أي شبكة بعد
-              </div>
-            )}
-          </div>
-        );
-
-      case 'notifications':
-        return (
-          <div className="space-y-4">
-            <div className="flex justify-between items-center">
-              <h4 className="font-black text-xs flex items-center gap-2"><Bell size={14} /> الإشعارات</h4>
-              <button onClick={handleMarkAllRead} className="text-[10px] font-black text-indigo-600 hover:underline">تحديد الكل كمقروء</button>
-            </div>
-            <div className="space-y-3">
-              {notifications.map((n, i) => (
-                <div key={i} className={cn("glass-card p-5 rounded-[2rem] border transition-all flex gap-4", n.read ? "bg-slate-50 dark:bg-slate-900 border-transparent opacity-60" : "bg-white dark:bg-white/5 border-indigo-100 dark:border-indigo-900/30 shadow-sm")}>
-                  <div className={cn("w-10 h-10 rounded-full flex items-center justify-center shrink-0", 
-                    n.type === 'success' ? "bg-emerald-50 text-emerald-600" : 
-                    n.type === 'warning' ? "bg-amber-50 text-amber-600" : "bg-indigo-50 text-indigo-600"
-                  )}>
-                    {n.type === 'success' ? <CheckCircle2 size={20} /> : n.type === 'warning' ? <AlertCircle size={20} /> : <Info size={20} />}
-                  </div>
-                  <div className="flex-1">
-                    <div className="flex justify-between items-start">
-                      <h5 className="font-black text-sm">{n.title}</h5>
-                      <span className="text-[8px] opacity-50 font-mono">{new Date(n.createdAt).toLocaleString('ar-YE')}</span>
-                    </div>
-                    <p className="text-xs font-bold mt-1 text-slate-600 dark:text-slate-400">{n.message}</p>
-                    {!n.read && (
-                      <button onClick={() => handleMarkRead(n.id)} className="text-[10px] font-black text-indigo-600 mt-2">تحديد كمقروء</button>
-                    )}
-                  </div>
-                </div>
-              ))}
-              {notifications.length === 0 && (
-                <div className="py-20 text-center text-slate-400 font-bold border-2 border-dashed rounded-[3rem]">
-                  لا توجد إشعارات حالياً
-                </div>
-              )}
-            </div>
-          </div>
-        );
-
-      case 'support':
-        return (
-          <div className="max-w-2xl mx-auto space-y-6">
-            <div className="text-center space-y-2">
-              <div className="w-20 h-20 bg-indigo-600 text-white rounded-[2rem] flex items-center justify-center mx-auto text-3xl shadow-xl shadow-indigo-200">
-                <LifeBuoy size={40} />
-              </div>
-              <h3 className="text-xl font-black">الدعم الفني</h3>
-              <p className="text-xs text-slate-500 font-bold">نحن هنا لمساعدتك في أي وقت</p>
-            </div>
-
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-              <a href="https://wa.me/967770000000" target="_blank" className="glass-card p-6 rounded-[2rem] border bg-white dark:bg-white/5 flex items-center gap-4 hover:shadow-lg transition-all group">
-                <div className="w-12 h-12 rounded-2xl bg-emerald-50 text-emerald-600 flex items-center justify-center group-hover:scale-110 transition-transform">
-                  <svg viewBox="0 0 24 24" className="w-6 h-6 fill-current"><path d="M17.472 14.382c-.297-.149-1.758-.867-2.03-.967-.273-.099-.471-.148-.67.15-.197.297-.767.966-.94 1.164-.173.199-.347.223-.644.075-.297-.15-1.255-.463-2.39-1.475-.883-.788-1.48-1.761-1.653-2.059-.173-.297-.018-.458.13-.606.134-.133.298-.347.446-.52.149-.174.198-.298.298-.497.099-.198.05-.371-.025-.52-.075-.149-.669-1.612-.916-2.207-.242-.579-.487-.5-.669-.51-.173-.008-.371-.01-.57-.01-.198 0-.52.074-.792.372-.272.297-1.04 1.016-1.04 2.479 0 1.462 1.065 2.875 1.213 3.074.149.198 2.096 3.2 5.077 4.487.709.306 1.262.489 1.694.625.712.227 1.36.195 1.871.118.571-.085 1.758-.719 2.006-1.413.248-.694.248-1.289.173-1.413-.074-.124-.272-.198-.57-.347m-5.421 7.403h-.004a9.87 9.87 0 01-5.031-1.378l-.361-.214-3.741.982.998-3.648-.235-.374a9.86 9.86 0 01-1.51-5.26c.001-5.45 4.436-9.884 9.888-9.884 2.64 0 5.122 1.03 6.988 2.898a9.825 9.825 0 012.893 6.994c-.003 5.45-4.437 9.884-9.885 9.884m8.413-18.297A11.815 11.815 0 0012.05 0C5.414 0 .018 5.396.015 12.03c0 2.12.554 4.189 1.605 6.006L0 24l6.117-1.605a11.803 11.803 0 005.925 1.586h.005c6.631 0 12.026-5.396 12.029-12.03.002-3.218-1.252-6.244-3.528-8.52z"/></svg>
-                </div>
-                <div>
-                  <p className="font-black text-sm">واتساب</p>
-                  <p className="text-[10px] font-bold text-slate-500">تواصل معنا عبر الواتساب</p>
-                </div>
-              </a>
-              <div className="glass-card p-6 rounded-[2rem] border bg-white dark:bg-white/5 flex items-center gap-4">
-                <div className="w-12 h-12 rounded-2xl bg-indigo-50 text-indigo-600 flex items-center justify-center">
-                  <Bell size={24} />
-                </div>
-                <div>
-                  <p className="font-black text-sm">مركز المساعدة</p>
-                  <p className="text-[10px] font-bold text-slate-500">دليل المستخدم والأسئلة الشائعة</p>
-                </div>
-              </div>
-            </div>
-
-            <div className="glass-card p-8 rounded-[3rem] border bg-white dark:bg-white/5 space-y-4">
-              <h4 className="font-black text-sm">أرسل لنا رسالة</h4>
-              <div className="space-y-3">
-                <input type="text" placeholder="الموضوع" className="w-full p-4 bg-slate-50 dark:bg-slate-900 border rounded-2xl outline-none focus:border-indigo-500 text-xs font-bold" />
-                <textarea placeholder="كيف يمكننا مساعدتك؟" className="w-full p-4 bg-slate-50 dark:bg-slate-900 border rounded-2xl outline-none focus:border-indigo-500 text-xs font-bold h-32" />
-                <button className="w-full py-4 bg-indigo-600 text-white rounded-2xl font-black text-xs shadow-xl hover:bg-indigo-700 transition-all">إرسال الرسالة</button>
-              </div>
-            </div>
-          </div>
-        );
-
-      case 'reports': {
-        const chartData = useMemo(() => {
-          const last7Days = Array.from({ length: 7 }, (_, i) => {
-            const d = new Date();
-            d.setDate(d.getDate() - i);
-            return d.toISOString().split('T')[0];
-          }).reverse();
-
-          return last7Days.map(date => {
-            const dayPurchases = userPurchases.filter(p => p.createdAt.startsWith(date));
-            const dayDeposits = userDeposits.filter(d => d.createdAt.startsWith(date) && d.status === Status.COMPLETED);
-            return {
-              name: new Date(date).toLocaleDateString('ar-YE', { weekday: 'short' }),
-              purchases: dayPurchases.reduce((sum, p) => sum + p.pointsUsed, 0),
-              deposits: dayDeposits.reduce((sum, d) => sum + d.amount, 0)
-            };
-          });
-        }, [userPurchases, userDeposits]);
-
-        const pieData = Object.entries(networkStats).map(([name, stats]: [string, any]) => ({
-          name,
-          value: stats.points
-        }));
-
-        const COLORS = ['#4f46e5', '#10b981', '#f59e0b', '#ef4444', '#8b5cf6', '#ec4899'];
-
-        return (
-          <div className="space-y-6">
-            <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-              <div className="glass-card p-6 rounded-[2rem] border bg-white dark:bg-white/5 space-y-4">
-                <h4 className="font-black text-xs flex items-center gap-2"><BarChart3 size={14} /> نشاط الأسبوع الأخير</h4>
-                <div className="h-[250px] w-full">
-                  <ResponsiveContainer width="100%" height="100%">
-                    <BarChart data={chartData}>
-                      <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#f1f5f9" />
-                      <XAxis dataKey="name" axisLine={false} tickLine={false} tick={{ fontSize: 10, fontWeight: 'bold' }} />
-                      <YAxis axisLine={false} tickLine={false} tick={{ fontSize: 10, fontWeight: 'bold' }} />
-                      <Tooltip 
-                        contentStyle={{ borderRadius: '16px', border: 'none', boxShadow: '0 10px 15px -3px rgb(0 0 0 / 0.1)', fontSize: '10px', fontWeight: 'bold' }}
-                        cursor={{ fill: '#f8fafc' }}
-                      />
-                      <Bar dataKey="purchases" name="استهلاك" fill="#4f46e5" radius={[4, 4, 0, 0]} />
-                      <Bar dataKey="deposits" name="شحن" fill="#10b981" radius={[4, 4, 0, 0]} />
-                    </BarChart>
-                  </ResponsiveContainer>
-                </div>
-              </div>
-
-              <div className="glass-card p-6 rounded-[2rem] border bg-white dark:bg-white/5 space-y-4">
-                <h4 className="font-black text-xs flex items-center gap-2"><BarChart3 size={14} /> توزيع الاستهلاك حسب الشبكة</h4>
-                <div className="h-[250px] w-full">
-                  <ResponsiveContainer width="100%" height="100%">
-                    <PieChart>
-                      <Pie
-                        data={pieData}
-                        cx="50%"
-                        cy="50%"
-                        innerRadius={60}
-                        outerRadius={80}
-                        paddingAngle={5}
-                        dataKey="value"
-                      >
-                        {pieData.map((entry, index) => (
-                          <Cell key={`cell-${index}`} fill={COLORS[index % COLORS.length]} />
-                        ))}
-                      </Pie>
-                      <Tooltip 
-                        contentStyle={{ borderRadius: '16px', border: 'none', boxShadow: '0 10px 15px -3px rgb(0 0 0 / 0.1)', fontSize: '10px', fontWeight: 'bold' }}
-                      />
-                    </PieChart>
-                  </ResponsiveContainer>
-                </div>
-                <div className="flex flex-wrap justify-center gap-4">
-                  {pieData.map((entry, index) => (
-                    <div key={index} className="flex items-center gap-2">
-                      <div className="w-2 h-2 rounded-full" style={{ backgroundColor: COLORS[index % COLORS.length] }}></div>
-                      <span className="text-[8px] font-black">{entry.name}</span>
-                    </div>
-                  ))}
-                </div>
-              </div>
-            </div>
-
-            <div className="glass-card p-6 rounded-[2rem] border bg-white dark:bg-white/5 space-y-4">
-              <h4 className="font-black text-xs">إحصائيات متقدمة</h4>
-              <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
-                <div className="p-4 bg-slate-50 dark:bg-slate-900 rounded-2xl text-center">
-                  <p className="text-[8px] font-black opacity-50 uppercase">متوسط الشحن</p>
-                  <p className="text-lg font-black text-emerald-600">{userDeposits.length > 0 ? Math.round(totalDeposited / userDeposits.length) : 0}</p>
-                </div>
-                <div className="p-4 bg-slate-50 dark:bg-slate-900 rounded-2xl text-center">
-                  <p className="text-[8px] font-black opacity-50 uppercase">متوسط الشراء</p>
-                  <p className="text-lg font-black text-rose-600">{userPurchases.length > 0 ? Math.round(totalSpent / userPurchases.length) : 0}</p>
-                </div>
-                <div className="p-4 bg-slate-50 dark:bg-slate-900 rounded-2xl text-center">
-                  <p className="text-[8px] font-black opacity-50 uppercase">أكثر شبكة</p>
-                  <p className="text-[10px] font-black truncate">{Object.entries(networkStats).sort((a: any, b: any) => b[1].count - a[1].count)[0]?.[0] || '---'}</p>
-                </div>
-                <div className="p-4 bg-slate-50 dark:bg-slate-900 rounded-2xl text-center">
-                  <p className="text-[8px] font-black opacity-50 uppercase">أيام النشاط</p>
-                  <p className="text-lg font-black text-indigo-600">{new Set([...userPurchases, ...userDeposits].map(x => x.createdAt.split('T')[0])).size}</p>
-                </div>
-              </div>
-            </div>
-          </div>
-        );
-      }
-
-      case 'user_summary':
-        return (
-          <div className="space-y-4">
-            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
-              <div className="glass-card p-6 rounded-[2rem] border bg-indigo-600 text-white">
-                <p className="text-[8px] font-black opacity-70 uppercase tracking-widest">الرصيد الحالي</p>
-                <h3 className="text-3xl font-black mt-1">{user.pointsBalance}</h3>
-              </div>
-              <div className="glass-card p-6 rounded-[2rem] border bg-emerald-500 text-white">
-                <p className="text-[8px] font-black opacity-70 uppercase tracking-widest">إجمالي الشحن</p>
-                <h3 className="text-3xl font-black mt-1">{totalDeposited}</h3>
-              </div>
-              <div className="glass-card p-6 rounded-[2rem] border bg-rose-500 text-white">
-                <p className="text-[8px] font-black opacity-70 uppercase tracking-widest">إجمالي الاستهلاك</p>
-                <h3 className="text-3xl font-black mt-1">{totalSpent}</h3>
-              </div>
-              <div className="glass-card p-6 rounded-[2rem] border bg-amber-500 text-white">
-                <p className="text-[8px] font-black opacity-70 uppercase tracking-widest">عدد الكروت</p>
-                <h3 className="text-3xl font-black mt-1">{userPurchases.length}</h3>
-              </div>
-            </div>
-            <div className="glass-card p-6 rounded-[2rem] border bg-white dark:bg-white/5">
-              <h4 className="font-black text-xs mb-4">إحصائيات الشبكات</h4>
-              <div className="space-y-3">
-                {Object.entries(networkStats).map(([name, stats]: [string, any]) => (
-                  <div key={name} className="flex justify-between items-center p-3 bg-slate-50 dark:bg-slate-900 rounded-xl">
-                    <span className="font-bold text-xs">{name}</span>
-                    <div className="flex gap-4">
-                      <span className="text-[10px] font-black text-indigo-600">{stats.count} كرت</span>
-                      <span className="text-[10px] font-black text-emerald-600">{stats.points} نقطة</span>
-                    </div>
-                  </div>
-                ))}
-              </div>
-            </div>
-          </div>
-        );
-
-      case 'full_transactions': {
-        const transactions = [
-          ...userPurchases.map(p => ({
-            date: p.createdAt,
-            type: 'شراء',
-            detail: p.networkName,
-            subDetail: p.categoryName,
-            amount: p.pointsUsed,
-            ref: StorageService.decryptCardCode(p.cardNumber!)
-          })),
-          ...userDeposits.map(d => ({
-            date: d.createdAt,
-            type: 'شحن',
-            detail: d.bankName,
-            subDetail: d.status,
-            amount: d.amount,
-            ref: d.referenceNumber
-          }))
-        ].sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime());
-
-        return (
-          <div className="space-y-4">
-            <div className="flex justify-end">
-              <button onClick={() => handleExportCSV(transactions, 'transactions')} className="px-4 py-2 bg-emerald-600 text-white rounded-xl text-[10px] font-black shadow-md">تصدير CSV 📥</button>
-            </div>
-            <div className="glass-card rounded-[2rem] overflow-hidden border bg-white dark:bg-white/5">
-              <div className="overflow-x-auto">
-                <table className="w-full text-right text-[10px]">
-                  <thead className="bg-slate-50 dark:bg-white/5 font-black">
-                    <tr>
-                      <th className="p-4">التاريخ</th>
-                      <th className="p-4">النوع</th>
-                      <th className="p-4">البيان</th>
-                      <th className="p-4">المبلغ</th>
-                      <th className="p-4">المرجع</th>
-                    </tr>
-                  </thead>
-                  <tbody className="divide-y divide-slate-100 dark:divide-white/5 font-bold">
-                    {transactions.map((t, i) => (
-                      <tr key={i} className="hover:bg-slate-50 dark:hover:bg-white/5">
-                        <td className="p-4 font-mono text-[8px]">{new Date(t.date).toLocaleString('ar-YE')}</td>
-                        <td className="p-4">
-                          <span className={`px-2 py-0.5 rounded-md ${t.type === 'شراء' ? 'bg-rose-50 text-rose-600' : 'bg-emerald-50 text-emerald-600'}`}>{t.type}</span>
-                        </td>
-                        <td className="p-4">
-                          <div>{t.detail}</div>
-                          <div className="text-[8px] opacity-50">{t.subDetail}</div>
-                        </td>
-                        <td className="p-4 font-black">{t.amount}</td>
-                        <td className="p-4 font-mono text-[8px]">
-                          <div className="flex items-center gap-2">
-                            <span>{revealed[t.ref] ? t.ref : '••••••••••••'}</span>
-                            {t.type === 'شراء' && (
-                              <button onClick={() => setRevealed({...revealed, [t.ref]: !revealed[t.ref]})} className="text-[10px]">
-                                {revealed[t.ref] ? '🙈' : '👁️'}
-                              </button>
-                            )}
-                          </div>
-                        </td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
-            </div>
-          </div>
-        );
-      }
-
-      case 'purchases_only': {
-        const purchases = userPurchases.sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
-        return (
-          <div className="space-y-4">
-            <div className="flex justify-end">
-              <button onClick={() => handleExportCSV(purchases, 'purchases')} className="px-4 py-2 bg-emerald-600 text-white rounded-xl text-[10px] font-black shadow-md">تصدير CSV 📥</button>
-            </div>
-            <div className="glass-card rounded-[2rem] overflow-hidden border bg-white dark:bg-white/5">
-              <div className="overflow-x-auto">
-                <table className="w-full text-right text-[10px]">
-                  <thead className="bg-slate-50 dark:bg-white/5 font-black">
-                    <tr>
-                      <th className="p-4">التاريخ</th>
-                      <th className="p-4">الشبكة</th>
-                      <th className="p-4">الفئة</th>
-                      <th className="p-4">النقاط</th>
-                      <th className="p-4">الكود</th>
-                    </tr>
-                  </thead>
-                  <tbody className="divide-y divide-slate-100 dark:divide-white/5 font-bold">
-                    {purchases.map((p, i) => (
-                      <tr key={i} className="hover:bg-slate-50 dark:hover:bg-white/5">
-                        <td className="p-4 font-mono text-[8px]">{new Date(p.createdAt).toLocaleString('ar-YE')}</td>
-                        <td className="p-4">{p.networkName}</td>
-                        <td className="p-4">{p.categoryName}</td>
-                        <td className="p-4 font-black">{p.pointsUsed}</td>
-                        <td className="p-4 font-mono text-[8px]">
-                          <div className="flex items-center gap-2">
-                            <span>{revealed[p.id] ? StorageService.decryptCardCode(p.cardNumber!) : '••••••••••••'}</span>
-                            <button onClick={() => setRevealed({...revealed, [p.id]: !revealed[p.id]})} className="text-[10px]">
-                              {revealed[p.id] ? '🙈' : '👁️'}
-                            </button>
-                          </div>
-                        </td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
-            </div>
-          </div>
-        );
-      }
-
-      case 'deposits_only': {
-        const deposits = userDeposits.sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
-        return (
-          <div className="space-y-4">
-            <div className="flex justify-end">
-              <button onClick={() => handleExportCSV(deposits, 'deposits')} className="px-4 py-2 bg-emerald-600 text-white rounded-xl text-[10px] font-black shadow-md">تصدير CSV 📥</button>
-            </div>
-            <div className="glass-card rounded-[2rem] overflow-hidden border bg-white dark:bg-white/5">
-              <div className="overflow-x-auto">
-                <table className="w-full text-right text-[10px]">
-                  <thead className="bg-slate-50 dark:bg-white/5 font-black">
-                    <tr>
-                      <th className="p-4">التاريخ</th>
-                      <th className="p-4">البنك</th>
-                      <th className="p-4">المبلغ</th>
-                      <th className="p-4">الحالة</th>
-                      <th className="p-4">المرجع</th>
-                    </tr>
-                  </thead>
-                  <tbody className="divide-y divide-slate-100 dark:divide-white/5 font-bold">
-                    {deposits.map((d, i) => (
-                      <tr key={i} className="hover:bg-slate-50 dark:hover:bg-white/5">
-                        <td className="p-4 font-mono text-[8px]">{new Date(d.createdAt).toLocaleString('ar-YE')}</td>
-                        <td className="p-4">{d.bankName}</td>
-                        <td className="p-4 font-black">{d.amount}</td>
-                        <td className="p-4">
-                          <span className={`px-2 py-0.5 rounded-md ${d.status === Status.COMPLETED ? 'bg-emerald-50 text-emerald-600' : d.status === Status.REJECTED ? 'bg-rose-50 text-rose-600' : 'bg-amber-50 text-amber-600'}`}>{d.status}</span>
-                        </td>
-                        <td className="p-4 font-mono text-[8px]">{d.referenceNumber}</td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
-            </div>
-          </div>
-        );
-      }
-
-      case 'networks_summary':
-        return (
-          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
-            {Object.entries(networkStats).map(([name, stats]: [string, any]) => (
-              <div key={name} className="glass-card p-6 rounded-[2rem] border bg-white dark:bg-white/5 space-y-4">
-                <div className="flex justify-between items-center">
-                  <h4 className="font-black text-sm">{name}</h4>
-                  <span className="text-2xl">📡</span>
-                </div>
-                <div className="grid grid-cols-2 gap-2">
-                  <div className="p-3 bg-indigo-50 dark:bg-white/5 rounded-xl text-center">
-                    <p className="text-[8px] font-black opacity-50">الكروت</p>
-                    <p className="font-black text-indigo-600">{stats.count}</p>
-                  </div>
-                  <div className="p-3 bg-emerald-50 dark:bg-white/5 rounded-xl text-center">
-                    <p className="text-[8px] font-black opacity-50">النقاط</p>
-                    <p className="font-black text-emerald-600">{stats.points}</p>
-                  </div>
-                </div>
-              </div>
-            ))}
-          </div>
-        );
-
-      case 'recent_activities': {
-        const activities = [
-          ...userPurchases.map(p => ({ date: p.createdAt, title: `شراء كرت ${p.networkName}`, amount: -p.pointsUsed, icon: '🎫' })),
-          ...userDeposits.map(d => ({ date: d.createdAt, title: `شحن رصيد (${d.bankName})`, amount: d.amount, icon: '💰', status: d.status }))
-        ].sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime()).slice(0, 10);
-
-        return (
-          <div className="glass-card p-6 rounded-[2rem] border bg-white dark:bg-white/5 space-y-4">
-            <h4 className="font-black text-xs border-b pb-2">آخر النشاطات</h4>
-            <div className="space-y-3">
-              {activities.map((a, i) => (
-                <div key={i} className="flex justify-between items-center p-3 bg-slate-50 dark:bg-slate-900 rounded-xl">
-                  <div className="flex items-center gap-3">
-                    <span className="text-lg">{a.icon}</span>
-                    <div>
-                      <p className="font-bold text-xs">{a.title}</p>
-                      <p className="text-[8px] opacity-50 font-mono">{new Date(a.date).toLocaleString('ar-YE')}</p>
-                    </div>
-                  </div>
-                  <div className="text-left">
-                    <p className={`font-black text-xs ${a.amount > 0 ? 'text-emerald-600' : 'text-rose-600'}`}>{a.amount > 0 ? '+' : ''}{a.amount}</p>
-                    {a.status && <p className="text-[7px] font-bold opacity-50">{a.status}</p>}
-                  </div>
-                </div>
-              ))}
-            </div>
-          </div>
-        );
-      }
-
-      case 'text':
-        return <div className="glass-card p-8 rounded-[2rem] border bg-white dark:bg-white/5"><p className="text-sm font-bold leading-relaxed">{tab.content}</p></div>;
-      case 'html':
-        return <div className="glass-card p-8 rounded-[2rem] border bg-white dark:bg-white/5" dangerouslySetInnerHTML={{ __html: tab.content }} />;
-      case 'table':
-        return (
-          <div className="glass-card rounded-[2rem] overflow-hidden border bg-white dark:bg-white/5">
-            <table className="w-full text-right text-xs">
-              <thead className="bg-slate-50 dark:bg-white/5 font-black">
-                <tr>
-                  {tab.content.columns?.map((col: string, i: number) => <th key={i} className="p-4">{col}</th>)}
-                </tr>
-              </thead>
-              <tbody className="divide-y divide-slate-100 dark:divide-white/5 font-bold">
-                {tab.content.rows?.map((row: any[], i: number) => (
-                  <tr key={i} className="hover:bg-slate-50 dark:hover:bg-white/5">
-                    {row.map((cell: any, j: number) => <td key={j} className="p-4">{cell}</td>)}
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-        );
-      case 'cards':
-        return (
-          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
-            {tab.content.map((item: any, i: number) => (
-              <div key={i} className="glass-card p-6 rounded-[2rem] border bg-white dark:bg-white/5 space-y-3">
-                {item.image && <img src={item.image} alt={item.title} className="w-full h-32 object-cover rounded-xl" />}
-                <h4 className="font-black text-sm">{item.title}</h4>
-                <p className="text-[10px] text-slate-500 font-bold">{item.description}</p>
-              </div>
-            ))}
-          </div>
-        );
-      case 'stats':
-        return (
-          <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
-            {tab.content.showPoints && (
-              <div className="glass-card p-6 rounded-[2rem] border bg-indigo-50 dark:bg-white/5">
-                <p className="text-[8px] font-black opacity-50 uppercase tracking-widest">رصيدك</p>
-                <h3 className="text-2xl font-black text-indigo-600 mt-1">{user.pointsBalance}</h3>
-              </div>
-            )}
-            {tab.content.showOrders && (
-              <div className="glass-card p-6 rounded-[2rem] border bg-emerald-50 dark:bg-white/5">
-                <p className="text-[8px] font-black opacity-50 uppercase tracking-widest">مشترياتك</p>
-                <h3 className="text-2xl font-black text-emerald-600 mt-1">{orders.length}</h3>
-              </div>
-            )}
-            {tab.content.customStats?.map((stat: any, i: number) => (
-              <div key={i} className="glass-card p-6 rounded-[2rem] border bg-slate-50 dark:bg-white/5">
-                <p className="text-[8px] font-black opacity-50 uppercase tracking-widest">{stat.label}</p>
-                <h3 className="text-2xl font-black text-slate-700 dark:text-slate-200 mt-1">{stat.value}</h3>
-              </div>
-            ))}
-          </div>
-        );
-      default:
-        return null;
-    }
-  };
-
   return (
-    <div className="flex flex-col lg:flex-row min-h-[calc(100vh-120px)] gap-6" dir="rtl">
+    <div className="min-h-screen bg-slate-50 dark:bg-indigo-950/20 flex flex-row-reverse">
       {/* Sidebar */}
       <aside className={cn(
-        "lg:w-64 shrink-0 glass-card rounded-[2.5rem] border bg-white dark:bg-white/5 p-4 flex flex-col gap-2 transition-all duration-300",
-        "fixed inset-y-0 right-0 z-[100] lg:relative lg:inset-auto",
-        isSidebarOpen ? "translate-x-0" : "translate-x-full lg:translate-x-0"
+        "fixed inset-y-0 right-0 z-50 w-72 bg-white dark:bg-indigo-950 border-l border-slate-200 dark:border-white/5 transition-transform duration-300 lg:translate-x-0 lg:static",
+        isSidebarOpen ? "translate-x-0" : "translate-x-full"
       )}>
-        <div className="flex items-center justify-between mb-6 px-2 lg:hidden">
-          <h2 className="font-black text-indigo-600">القائمة</h2>
-          <button onClick={() => setIsSidebarOpen(false)} className="p-2 hover:bg-slate-100 rounded-full"><X size={20} /></button>
-        </div>
+        <div className="h-full flex flex-col p-6">
+          <div className="flex items-center gap-3 mb-10 px-2">
+            <div className="w-10 h-10 bg-indigo-600 rounded-2xl flex items-center justify-center text-white font-black text-xl shadow-lg shadow-indigo-200">Q</div>
+            <h1 className="font-black text-xl tracking-tight text-indigo-900 dark:text-white">كوانتوم واي فاي</h1>
+          </div>
 
-        <div className="flex-1 space-y-1 overflow-y-auto no-scrollbar">
-          {layout?.sections.map((section: any) => (
-            <button
-              key={section.id}
-              onClick={() => {
-                setActiveSectionId(section.id);
-                const firstSub = section.subTabs.filter((st: any) => st.enabled).sort((a: any, b: any) => a.order - b.order)[0];
-                if (firstSub) setActiveSubTabId(firstSub.id);
-                setIsSidebarOpen(false);
-              }}
-              className={cn(
-                "w-full flex items-center gap-3 px-4 py-3 rounded-2xl font-black text-xs transition-all",
-                activeSectionId === section.id 
-                  ? "bg-indigo-600 text-white shadow-lg shadow-indigo-200" 
-                  : "text-slate-500 hover:bg-slate-50 dark:hover:bg-white/5"
-              )}
+          <nav className="flex-1 space-y-2">
+            {[
+              { id: 'home', label: 'الرئيسية', icon: ShoppingBag },
+              { id: 'wallet', label: 'محفظتي', icon: Wallet },
+              { id: 'transactions', label: 'سجل العمليات', icon: History },
+              { id: 'favorites', label: 'الشبكات المفضلة', icon: Heart },
+              { id: 'reports', label: 'التقارير', icon: BarChart3 },
+              { id: 'support', label: 'الدعم الفني', icon: LifeBuoy },
+              { id: 'settings', label: 'الإعدادات', icon: Settings },
+            ].map((item: any) => (
+              <button
+                key={item.id}
+                onClick={() => { setActiveSection(item.id); setIsSidebarOpen(false); }}
+                className={cn(
+                  "w-full flex items-center gap-4 px-5 py-4 rounded-[1.5rem] font-black text-xs transition-all",
+                  activeSection === item.id 
+                    ? "bg-indigo-600 text-white shadow-xl shadow-indigo-100 dark:shadow-none" 
+                    : "text-slate-500 hover:bg-slate-50 dark:hover:bg-white/5"
+                )}
+              >
+                <item.icon size={18} />
+                <span>{item.label}</span>
+              </button>
+            ))}
+          </nav>
+
+          <div className="pt-6 border-t dark:border-white/5">
+            <button 
+              onClick={() => { StorageService.logout(); window.location.reload(); }}
+              className="w-full flex items-center gap-4 px-5 py-4 rounded-[1.5rem] font-black text-xs text-rose-500 hover:bg-rose-50 transition-all"
             >
-              <span className="text-lg">{section.icon}</span>
-              <span>{section.label}</span>
+              <LogOut size={18} />
+              <span>تسجيل الخروج</span>
             </button>
-          ))}
-        </div>
-
-        <div className="pt-4 border-t dark:border-white/5 space-y-1">
-          <button onClick={onUpdate} className="w-full flex items-center gap-3 px-4 py-3 rounded-2xl font-black text-xs text-slate-500 hover:bg-slate-50 dark:hover:bg-white/5">
-            <LogOut size={18} />
-            <span>تسجيل الخروج</span>
-          </button>
+          </div>
         </div>
       </aside>
 
-      {/* Main Content Area */}
-      <main className="flex-1 space-y-6">
+      {/* Main Content */}
+      <main className="flex-1 min-w-0 overflow-y-auto">
         {/* Mobile Header */}
-        <div className="lg:hidden flex justify-between items-center mb-4">
-          <button onClick={() => setIsSidebarOpen(true)} className="p-3 bg-white dark:bg-white/5 rounded-2xl shadow-sm border"><Menu size={20} /></button>
-          <h1 className="font-black text-indigo-600">{activeSection?.label}</h1>
-          <div className="w-10"></div>
-        </div>
+        <header className="lg:hidden bg-white dark:bg-indigo-950 p-4 border-b dark:border-white/5 flex justify-between items-center sticky top-0 z-40">
+          <button onClick={() => setIsSidebarOpen(true)} className="p-2 text-slate-600 dark:text-white">
+            <Menu size={24} />
+          </button>
+          <div className="w-8 h-8 bg-indigo-600 rounded-lg flex items-center justify-center text-white font-black">Q</div>
+        </header>
 
-        {/* Sub-tabs Header */}
-        {activeSection && activeSection.subTabs.length > 1 && (
-          <div className="flex gap-2 overflow-x-auto no-scrollbar pb-2">
-            {activeSection.subTabs.filter((st: any) => st.enabled).sort((a: any, b: any) => a.order - b.order).map((st: any) => (
-              <button
-                key={st.id}
-                onClick={() => setActiveSubTabId(st.id)}
-                className={cn(
-                  "px-6 py-2.5 rounded-2xl font-black text-[10px] transition-all whitespace-nowrap border",
-                  activeSubTabId === st.id 
-                    ? "bg-indigo-600 text-white border-indigo-600 shadow-md" 
-                    : "bg-white dark:bg-white/5 text-slate-500 border-slate-100 dark:border-white/10 hover:border-indigo-200"
-                )}
-              >
-                {st.icon} {st.label}
+        <div className="p-4 lg:p-10 max-w-7xl mx-auto space-y-8">
+          {/* Section Header */}
+          <div className="flex flex-col md:flex-row md:items-center justify-between gap-4">
+            <div>
+              <h2 className="text-3xl font-black text-slate-900 dark:text-white tracking-tight">
+                {activeSection === 'home' && 'مرحباً بك، ' + user.fullName.split(' ')[0] + ' 👋'}
+                {activeSection === 'wallet' && 'محفظتي الإلكترونية'}
+                {activeSection === 'transactions' && 'سجل العمليات'}
+                {activeSection === 'favorites' && 'الشبكات المفضلة'}
+                {activeSection === 'reports' && 'تقارير الاستخدام'}
+                {activeSection === 'support' && 'مركز الدعم'}
+                {activeSection === 'settings' && 'إعدادات الحساب'}
+              </h2>
+              <p className="text-slate-500 font-bold text-xs mt-1">
+                {activeSection === 'home' && 'تصفح الشبكات المتاحة وابدأ التسوق الآن'}
+                {activeSection === 'wallet' && 'إدارة رصيدك وعمليات الشحن'}
+                {activeSection === 'transactions' && 'متابعة كافة تحركات حسابك المالية'}
+                {activeSection === 'favorites' && 'الوصول السريع لشبكاتك المفضلة'}
+                {activeSection === 'reports' && 'نظرة تحليلية على نشاطك'}
+                {activeSection === 'support' && 'نحن هنا لمساعدتك في أي وقت'}
+                {activeSection === 'settings' && 'تحديث بيانات الأمان والخصوصية'}
+              </p>
+            </div>
+            
+            <div className="flex items-center gap-3">
+              <div className="glass-card px-6 py-3 rounded-2xl border bg-white dark:bg-white/5 flex items-center gap-3 shadow-sm">
+                <div className="w-8 h-8 bg-emerald-500/10 text-emerald-600 rounded-lg flex items-center justify-center">
+                  <Wallet size={16} />
+                </div>
+                <div>
+                  <p className="text-[8px] font-black text-slate-400 uppercase tracking-widest">الرصيد</p>
+                  <p className="text-sm font-black text-slate-900 dark:text-white">{user.pointsBalance} <span className="text-[10px] opacity-50">نقطة</span></p>
+                </div>
+              </div>
+              <button onClick={() => setShowPointsModal(true)} className="bg-indigo-600 text-white p-4 rounded-2xl shadow-lg shadow-indigo-200 hover:scale-105 transition-all active:scale-95">
+                <ArrowUpRight size={20} />
               </button>
-            ))}
+            </div>
           </div>
-        )}
 
-        {/* Dynamic Content Rendering */}
-        <div className="animate-in fade-in slide-in-from-bottom-4 duration-500">
-          {activeSubTab && (
+          {/* Home Section (Shopping) */}
+          {activeSection === 'home' && (
+            <div className="space-y-8">
+              <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
+                <StatCard title="إجمالي المشتريات" value={`${orders.length} كرت`} icon={ShoppingBag} color="bg-indigo-50 text-indigo-600" />
+                <StatCard title="إجمالي الشحن" value={`${deposits.reduce((s, d) => s + (d.status === Status.COMPLETED ? d.amount : 0), 0)} ن`} icon={ArrowUpRight} color="bg-emerald-50 text-emerald-600" />
+                <StatCard title="الشبكات المفضلة" value={`${favoriteAgents.length} شبكة`} icon={Heart} color="bg-rose-50 text-rose-600" />
+              </div>
+
+              <div className="space-y-6">
+                <div className="flex items-center justify-between">
+                  <h3 className="text-xl font-black text-slate-900 dark:text-white flex items-center gap-2">
+                    <Filter size={18} className="text-indigo-600" />
+                    الشبكات المتوفرة
+                  </h3>
+                  <div className="relative w-64">
+                    <input 
+                      type="text" 
+                      placeholder="ابحث عن شبكة..." 
+                      value={searchQuery}
+                      onChange={(e) => setSearchQuery(e.target.value)}
+                      className="w-full bg-white dark:bg-white/5 border dark:border-white/10 p-3 pr-10 rounded-xl text-xs font-bold outline-none focus:ring-2 focus:ring-indigo-500/50"
+                    />
+                    <Search size={14} className="absolute right-3 top-3.5 text-slate-400" />
+                  </div>
+                </div>
+
+                <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-6">
+                  {agents.filter(a => a.networkName.toLowerCase().includes(searchQuery.toLowerCase())).map(agent => (
+                    <div key={agent.id} className="glass-card p-6 rounded-[2.5rem] border bg-white dark:bg-white/5 hover:shadow-xl transition-all group relative overflow-hidden">
+                      <button 
+                        onClick={() => toggleFavorite(agent.id)}
+                        className={cn(
+                          "absolute top-4 left-4 p-2 rounded-xl transition-all",
+                          user.favorites?.includes(agent.id) ? "text-amber-500 bg-amber-50" : "text-slate-300 hover:text-amber-500"
+                        )}
+                      >
+                        <Star size={18} fill={user.favorites?.includes(agent.id) ? "currentColor" : "none"} />
+                      </button>
+                      
+                      <div className="w-16 h-16 bg-indigo-50 dark:bg-white/5 text-indigo-600 rounded-3xl flex items-center justify-center text-3xl mb-4 group-hover:scale-110 transition-transform">📡</div>
+                      <h4 className="font-black text-lg text-slate-900 dark:text-white mb-1">{agent.networkName}</h4>
+                      <p className="text-[10px] text-slate-400 font-bold uppercase tracking-widest mb-6">شبكة واي فاي نشطة</p>
+                      
+                      <button 
+                        onClick={() => { setSelectedAgent(agent); setCategories(StorageService.getCategories(agent.id).filter(c => c.isActive)); }}
+                        className="w-full py-4 bg-indigo-600 text-white rounded-2xl font-black text-xs shadow-lg shadow-indigo-100 dark:shadow-none active:scale-95 transition-all"
+                      >
+                        تصفح الفئات 🛒
+                      </button>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            </div>
+          )}
+
+          {/* Wallet Section */}
+          {activeSection === 'wallet' && (
+            <div className="space-y-8">
+              <div className="grid grid-cols-1 lg:grid-cols-3 gap-8">
+                <div className="lg:col-span-1 space-y-6">
+                  <div className="glass-card p-8 rounded-[3rem] bg-indigo-600 text-white shadow-2xl relative overflow-hidden">
+                    <div className="absolute top-0 right-0 p-6 opacity-10 text-8xl">💎</div>
+                    <p className="text-xs font-black opacity-70 mb-2 uppercase tracking-widest">الرصيد المتاح</p>
+                    <div className="text-5xl font-black mb-8">{user.pointsBalance} <span className="text-sm opacity-60">نقطة</span></div>
+                    <button onClick={() => setShowPointsModal(true)} className="w-full py-4 bg-white text-indigo-600 rounded-2xl font-black text-sm shadow-xl hover:scale-[1.02] transition-all active:scale-95">شحن رصيد الآن +</button>
+                  </div>
+
+                  <div className="glass-card p-6 rounded-[2.5rem] border bg-white dark:bg-white/5 space-y-4">
+                    <h4 className="font-black text-sm border-b dark:border-white/5 pb-2">نصائح الأمان</h4>
+                    <div className="space-y-3">
+                      <div className="flex gap-3 text-xs font-bold text-slate-500">
+                        <div className="text-indigo-600">🛡️</div>
+                        <p>لا تشارك كلمة مرورك مع أي شخص آخر.</p>
+                      </div>
+                      <div className="flex gap-3 text-xs font-bold text-slate-500">
+                        <div className="text-indigo-600">📱</div>
+                        <p>تأكد من صحة رقم الحوالة عند طلب الشحن.</p>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+
+                <div className="lg:col-span-2 space-y-6">
+                  <h3 className="text-xl font-black text-slate-900 dark:text-white">سجل الشحنات الأخيرة</h3>
+                  <div className="glass-card rounded-[2rem] border bg-white dark:bg-white/5 overflow-hidden shadow-sm">
+                    <div className="overflow-x-auto">
+                      <table className="w-full text-right text-xs">
+                        <thead className="bg-slate-50 dark:bg-white/5 font-black text-slate-400">
+                          <tr>
+                            <th className="p-5">التاريخ</th>
+                            <th className="p-5">الطريقة</th>
+                            <th className="p-5">المبلغ</th>
+                            <th className="p-5">الحالة</th>
+                            <th className="p-5">المرجع</th>
+                          </tr>
+                        </thead>
+                        <tbody className="divide-y divide-slate-100 dark:divide-white/5 font-bold">
+                          {deposits.slice(0, 10).map((d, i) => (
+                            <tr key={i} className="hover:bg-slate-50 dark:hover:bg-white/5 transition-colors">
+                              <td className="p-5 text-[10px] text-slate-500">{new Date(d.createdAt).toLocaleDateString('ar-YE')}</td>
+                              <td className="p-5">{d.paymentMethod}</td>
+                              <td className="p-5 font-black text-indigo-600">{d.amount} ن</td>
+                              <td className="p-5">
+                                <span className={cn(
+                                  "px-3 py-1 rounded-full text-[10px] font-black",
+                                  d.status === Status.COMPLETED ? "bg-emerald-50 text-emerald-600" :
+                                  d.status === Status.REJECTED ? "bg-rose-50 text-rose-600" : "bg-amber-50 text-amber-600"
+                                )}>
+                                  {d.status === Status.COMPLETED ? 'مكتمل' : d.status === Status.REJECTED ? 'مرفوض' : 'قيد المراجعة'}
+                                </span>
+                              </td>
+                              <td className="p-5 font-mono text-[10px] opacity-50">{d.referenceNumber}</td>
+                            </tr>
+                          ))}
+                          {deposits.length === 0 && (
+                            <tr><td colSpan={5} className="p-10 text-center text-slate-400 font-bold">لا توجد عمليات شحن سابقة</td></tr>
+                          )}
+                        </tbody>
+                      </table>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            </div>
+          )}
+
+          {/* Transactions Section */}
+          {activeSection === 'transactions' && (
             <div className="space-y-6">
-              {/* Action Buttons Header */}
-              {activeSubTab.buttons && activeSubTab.buttons.length > 0 && (
-                <div className="flex flex-wrap gap-3 mb-4">
-                  {activeSubTab.buttons.map((btn: any) => (
-                    <button
-                      key={btn.id}
-                      onClick={() => {
-                        if (btn.actionType === 'openModal' && btn.actionData?.modal === 'points') setShowPointsModal(true);
-                        if (btn.actionType === 'navigate' && btn.actionData?.tab) {
-                          const target = layout.sections.find((s: any) => s.subTabs.some((st: any) => st.id === btn.actionData.tab));
-                          if (target) {
-                            setActiveSectionId(target.id);
-                            setActiveSubTabId(btn.actionData.tab);
-                          }
-                        }
-                      }}
-                      className="flex items-center gap-2 px-4 py-2 bg-indigo-50 text-indigo-600 rounded-xl text-[10px] font-black hover:bg-indigo-100 transition-all border border-indigo-100"
+              <div className="flex flex-col md:flex-row gap-4 justify-between items-end">
+                <div className="flex gap-2 p-1 bg-slate-100 dark:bg-white/5 rounded-2xl w-fit">
+                  {[
+                    { id: 'all', label: 'الكل' },
+                    { id: 'purchase', label: 'مشتريات' },
+                    { id: 'deposit', label: 'شحن رصيد' },
+                  ].map(t => (
+                    <button 
+                      key={t.id} 
+                      onClick={() => setTxTypeFilter(t.id as any)}
+                      className={cn(
+                        "px-6 py-2.5 rounded-xl text-xs font-black transition-all",
+                        txTypeFilter === t.id ? "bg-white dark:bg-indigo-600 text-indigo-600 dark:text-white shadow-sm" : "text-slate-500"
+                      )}
                     >
-                      {btn.icon && <span>{btn.icon}</span>}
-                      {btn.label}
+                      {t.label}
                     </button>
                   ))}
                 </div>
-              )}
+                
+                <div className="flex gap-3 w-full md:w-auto">
+                  <input 
+                    type="date" 
+                    value={txDateFilter}
+                    onChange={(e) => setTxDateFilter(e.target.value)}
+                    className="bg-white dark:bg-white/5 border dark:border-white/10 p-3 rounded-xl text-xs font-bold outline-none flex-1 md:w-40"
+                  />
+                  <button onClick={exportCSV} className="bg-slate-800 text-white px-6 py-3 rounded-xl font-black text-xs flex items-center gap-2 hover:bg-slate-700 transition-all">
+                    <Download size={16} />
+                    تصدير CSV
+                  </button>
+                </div>
+              </div>
 
-              {activeSubTab.contentType === 'builtin' ? (
-                activeSubTab.content?.type === 'shopping' ? (
-                  <div className="grid grid-cols-1 lg:grid-cols-4 gap-6">
-                    <div className="lg:col-span-1 space-y-4">
-                      <div className="glass-card p-6 rounded-[2.5rem] bg-indigo-600 text-white shadow-xl relative overflow-hidden group">
-                         <div className="absolute top-0 right-0 p-3 opacity-10 text-5xl">💎</div>
-                         <p className="text-[8px] font-black opacity-70 mb-1 uppercase tracking-widest">رصيدك الحالي</p>
-                         <div className="text-3xl font-black mb-4">{user.pointsBalance} <span className="text-[8px] uppercase opacity-80 font-bold">نقطة</span></div>
-                         <button onClick={() => setShowPointsModal(true)} className="w-full py-3 bg-white text-indigo-600 rounded-xl font-black text-[10px] shadow-lg active:scale-95 transition-all">شحن رصيد +</button>
-                      </div>
-                      <div className="glass-card p-4 rounded-[2.5rem] border bg-white dark:bg-white/5 space-y-3">
-                         <h3 className="font-black text-[9px] text-slate-400 px-1 tracking-widest uppercase">الشبكات المتوفرة</h3>
-                         <div className="space-y-1.5 max-h-[400px] overflow-y-auto no-scrollbar">
-                            {filteredAgents.map(a => (
-                              <button key={a.id} onClick={() => { setSelectedAgent(a); setCategories(StorageService.getCategories(a.id).filter(c => c.isActive)); }} className={cn("w-full p-3 rounded-xl text-right border transition-all flex justify-between items-center", selectedAgent?.id === a.id ? 'bg-indigo-600 text-white border-indigo-600 shadow-md' : 'bg-white dark:bg-slate-900 border-slate-100')}><span className="font-black text-[10px]">{a.networkName}</span><span className="text-[8px] opacity-40">◀</span></button>
-                            ))}
-                         </div>
-                      </div>
-                    </div>
-
-                    <div className="lg:col-span-3 space-y-6">
-                      {selectedAgent ? (
-                        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                           <h2 className="col-span-full text-base font-black text-slate-900 dark:text-white flex items-center gap-2">📡 فئات {selectedAgent.networkName}</h2>
-                           {filteredCategories.map(c => {
-                              const available = stockMap[c.id] || 0;
-                              const qty = qtyMap[c.id] === undefined ? 1 : qtyMap[c.id];
-                              return (
-                                <div key={c.id} className="glass-card p-5 rounded-[2rem] border space-y-3 hover:shadow-lg transition-all">
-                                   <div className="flex justify-between items-start">
-                                      <div><h4 className="font-black text-sm leading-none">{c.name}</h4><span className="text-[8px] text-indigo-600 font-black mt-1 inline-block">{c.dataSize}</span></div>
-                                      <div className={cn("text-[8px] font-black px-2 py-0.5 rounded-md", available > 0 ? 'bg-emerald-50 text-emerald-600' : 'bg-rose-50 text-rose-600')}>{available > 0 ? `متوفر: ${available}` : 'نفد'}</div>
-                                   </div>
-                                   <div className="flex items-center justify-between p-2 bg-slate-50 dark:bg-slate-900 rounded-xl">
-                                      <div className="flex items-center gap-2">
-                                         <button onClick={() => handleQtyChange(c.id, (qty - 1).toString(), available)} className="w-8 h-8 bg-white dark:bg-slate-800 rounded-lg font-black shadow-sm text-xs">-</button>
-                                         <input type="number" value={qty} onChange={(e) => handleQtyChange(c.id, e.target.value, available)} className="w-10 bg-transparent text-center font-black text-xs outline-none border-none" />
-                                         <button onClick={() => handleQtyChange(c.id, (qty + 1).toString(), available)} className="w-8 h-8 bg-white dark:bg-slate-800 rounded-lg font-black shadow-sm text-xs">+</button>
-                                      </div>
-                                      <div className="text-left font-black text-lg">{(c.pointsPrice * qty)} <span className="text-[8px]">نقطة</span></div>
-                                   </div>
-                                   <button disabled={available === 0 || qty === 0} onClick={() => setShowConfirm({ cat: c, qty })} className={cn("w-full py-3 rounded-xl font-black text-[10px] shadow-md transition-all", available > 0 && qty > 0 ? 'bg-indigo-600 text-white active:scale-95' : 'bg-slate-100 text-slate-400')}>{available > 0 ? 'شراء الآن ⚡' : 'نفد المخزون'}</button>
-                                </div>
-                              );
-                           })}
-                        </div>
-                      ) : (
-                        <div className="glass-card py-20 rounded-[3rem] text-center border-dashed border-2 text-slate-300 dark:border-white/5">
-                          <div className="text-6xl mb-4 opacity-20">🛒</div>
-                          <h3 className="text-base font-black">يرجى اختيار شبكة للبدء بالتسوق</h3>
-                        </div>
+              <div className="glass-card rounded-[2.5rem] border bg-white dark:bg-white/5 overflow-hidden shadow-sm">
+                <div className="overflow-x-auto">
+                  <table className="w-full text-right text-xs">
+                    <thead className="bg-slate-50 dark:bg-white/5 font-black text-slate-400">
+                      <tr>
+                        <th className="p-5">العملية</th>
+                        <th className="p-5">التفاصيل</th>
+                        <th className="p-5">المبلغ</th>
+                        <th className="p-5">التاريخ</th>
+                        <th className="p-5">المرجع / الكود</th>
+                        <th className="p-5 text-center">إجراء</th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-slate-100 dark:divide-white/5 font-bold">
+                      {transactions.map((t, i) => (
+                        <tr key={i} className="hover:bg-slate-50 dark:hover:bg-white/5 transition-colors">
+                          <td className="p-5">
+                            <div className="flex items-center gap-3">
+                              <div className={cn(
+                                "p-2 rounded-lg",
+                                t.type === 'purchase' ? "bg-rose-50 text-rose-600" : "bg-emerald-50 text-emerald-600"
+                              )}>
+                                {t.type === 'purchase' ? <ShoppingBag size={14} /> : <ArrowUpRight size={14} />}
+                              </div>
+                              <span>{t.title}</span>
+                            </div>
+                          </td>
+                          <td className="p-5 text-slate-500">{t.detail}</td>
+                          <td className={cn("p-5 font-black", t.amount > 0 ? "text-emerald-600" : "text-rose-600")}>
+                            {t.amount > 0 ? '+' : ''}{t.amount} ن
+                          </td>
+                          <td className="p-5 text-[10px] text-slate-400 font-mono" dir="ltr">
+                            {new Date(t.date).toLocaleString('ar-YE')}
+                          </td>
+                          <td className="p-5 font-mono text-[10px]">
+                            {t.type === 'purchase' ? (
+                              <div className="flex items-center gap-2">
+                                <span>{revealed[t.id] ? t.ref : '••••••••'}</span>
+                                <button onClick={() => setRevealed({...revealed, [t.id]: !revealed[t.id]})} className="text-indigo-600">
+                                  {revealed[t.id] ? <EyeOff size={12} /> : <Eye size={12} />}
+                                </button>
+                              </div>
+                            ) : (
+                              <span className="opacity-50">{t.ref}</span>
+                            )}
+                          </td>
+                          <td className="p-5 text-center">
+                            <button 
+                              onClick={() => { navigator.clipboard.writeText(t.ref); showNotification('تم النسخ ✅'); }}
+                              className="p-2 bg-slate-100 dark:bg-white/5 rounded-lg text-slate-600 dark:text-slate-400 hover:bg-indigo-600 hover:text-white transition-all"
+                            >
+                              <Copy size={14} />
+                            </button>
+                          </td>
+                        </tr>
+                      ))}
+                      {transactions.length === 0 && (
+                        <tr><td colSpan={6} className="p-20 text-center text-slate-400 font-bold">لا توجد نتائج مطابقة للبحث</td></tr>
                       )}
-                    </div>
-                  </div>
-                ) : (
-                  <div className="max-w-md mx-auto glass-card p-8 rounded-[3rem] border space-y-6 text-center shadow-2xl mt-10">
-                     <div className="w-20 h-20 bg-indigo-600/10 text-indigo-600 rounded-3xl flex items-center justify-center mx-auto mb-2 text-3xl">🔐</div>
-                     <h3 className="text-xl font-black text-indigo-600 tracking-tight">إعدادات الأمان</h3>
-                     <p className="text-[10px] text-slate-400 font-bold uppercase tracking-widest border-b dark:border-white/5 pb-3">تحديث كلمة مرور الدخول</p>
-                     <div className="space-y-4 pt-2">
-                        <div className="text-right">
-                           <label className="text-[8px] font-black text-slate-400 mr-2 uppercase tracking-widest">كلمة المرور الجديدة</label>
-                           <input type="password" value={passForm.new} onChange={e => setPassForm({...passForm, new: e.target.value})} className="w-full bg-slate-50 dark:bg-slate-900 border dark:border-white/10 p-4 rounded-2xl outline-none text-xs font-bold" placeholder="أدخل كلمة المرور الجديدة" />
-                        </div>
-                        <div className="text-right">
-                           <label className="text-[8px] font-black text-slate-400 mr-2 uppercase tracking-widest">تأكيد كلمة المرور</label>
-                           <input type="password" value={passForm.confirm} onChange={e => setPassForm({...passForm, confirm: e.target.value})} className="w-full bg-slate-50 dark:bg-slate-900 border dark:border-white/10 p-4 rounded-2xl outline-none text-xs font-bold" placeholder="كرر كلمة المرور مرة أخرى" />
-                        </div>
-                        <button onClick={handleUpdatePassword} className="w-full py-4 bg-indigo-600 text-white rounded-[2rem] font-black text-xs shadow-xl active:scale-95 transition-all mt-4">تحديث كلمة السر الآمنة ✨</button>
-                     </div>
-                  </div>
-                )
-              ) : (
-                <DynamicTabContent tab={activeSubTab} />
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+            </div>
+          )}
+
+          {/* Favorites Section */}
+          {activeSection === 'favorites' && (
+            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-6">
+              {favoriteAgents.map(agent => (
+                <div key={agent.id} className="glass-card p-6 rounded-[2.5rem] border bg-white dark:bg-white/5 hover:shadow-xl transition-all group relative overflow-hidden">
+                  <button 
+                    onClick={() => toggleFavorite(agent.id)}
+                    className="absolute top-4 left-4 p-2 rounded-xl text-amber-500 bg-amber-50"
+                  >
+                    <Star size={18} fill="currentColor" />
+                  </button>
+                  <div className="w-16 h-16 bg-indigo-50 dark:bg-white/5 text-indigo-600 rounded-3xl flex items-center justify-center text-3xl mb-4">📡</div>
+                  <h4 className="font-black text-lg text-slate-900 dark:text-white mb-1">{agent.networkName}</h4>
+                  <p className="text-[10px] text-slate-400 font-bold uppercase tracking-widest mb-6">شبكة مفضلة</p>
+                  <button 
+                    onClick={() => { setSelectedAgent(agent); setCategories(StorageService.getCategories(agent.id).filter(c => c.isActive)); setActiveSection('home'); }}
+                    className="w-full py-4 bg-indigo-600 text-white rounded-2xl font-black text-xs shadow-lg active:scale-95 transition-all"
+                  >
+                    تسوق الآن 🛒
+                  </button>
+                </div>
+              ))}
+              {favoriteAgents.length === 0 && (
+                <div className="col-span-full py-20 text-center glass-card rounded-[3rem] border-dashed border-2 text-slate-300">
+                  <div className="text-6xl mb-4 opacity-20">⭐</div>
+                  <h3 className="text-xl font-black">لا توجد شبكات مفضلة بعد</h3>
+                  <p className="text-xs font-bold mt-2">قم بتمييز الشبكات التي تستخدمها بكثرة للوصول السريع</p>
+                </div>
               )}
+            </div>
+          )}
+
+          {/* Reports Section */}
+          {activeSection === 'reports' && (
+            <div className="space-y-8">
+              <div className="grid grid-cols-1 lg:grid-cols-2 gap-8">
+                <div className="glass-card p-8 rounded-[3rem] border bg-white dark:bg-white/5 space-y-6">
+                  <h4 className="font-black text-sm flex items-center gap-2">
+                    <PieChartIcon size={18} className="text-indigo-600" />
+                    توزيع المشتريات حسب الشبكة
+                  </h4>
+                  <div className="h-64">
+                    <ResponsiveContainer width="100%" height="100%">
+                      <PieChart>
+                        <Pie
+                          data={Object.entries(orders.reduce((acc: any, o) => {
+                            acc[o.networkName] = (acc[o.networkName] || 0) + 1;
+                            return acc;
+                          }, {})).map(([name, value]) => ({ name, value }))}
+                          cx="50%"
+                          cy="50%"
+                          innerRadius={60}
+                          outerRadius={80}
+                          paddingAngle={5}
+                          dataKey="value"
+                        >
+                          {['#6366f1', '#10b981', '#f59e0b', '#ef4444', '#8b5cf6'].map((color, index) => (
+                            <Cell key={`cell-${index}`} fill={color} />
+                          ))}
+                        </Pie>
+                        <Tooltip />
+                      </PieChart>
+                    </ResponsiveContainer>
+                  </div>
+                </div>
+
+                <div className="glass-card p-8 rounded-[3rem] border bg-white dark:bg-white/5 space-y-6">
+                  <h4 className="font-black text-sm flex items-center gap-2">
+                    <BarChart3 size={18} className="text-emerald-600" />
+                    إحصائيات النقاط المستهلكة
+                  </h4>
+                  <div className="h-64">
+                    <ResponsiveContainer width="100%" height="100%">
+                      <BarChart data={Object.entries(orders.reduce((acc: any, o) => {
+                        const date = new Date(o.createdAt).toLocaleDateString('ar-YE');
+                        acc[date] = (acc[date] || 0) + o.pointsUsed;
+                        return acc;
+                      }, {})).map(([date, points]) => ({ date, points })).slice(-7)}>
+                        <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#e2e8f0" />
+                        <XAxis dataKey="date" fontSize={10} axisLine={false} tickLine={false} />
+                        <YAxis fontSize={10} axisLine={false} tickLine={false} />
+                        <Tooltip />
+                        <Bar dataKey="points" fill="#6366f1" radius={[4, 4, 0, 0]} />
+                      </BarChart>
+                    </ResponsiveContainer>
+                  </div>
+                </div>
+              </div>
+            </div>
+          )}
+
+          {/* Support Section */}
+          {activeSection === 'support' && (
+            <div className="max-w-4xl mx-auto space-y-8">
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+                <div className="glass-card p-8 rounded-[3rem] border bg-white dark:bg-white/5 text-center space-y-4">
+                  <div className="w-16 h-16 bg-indigo-50 text-indigo-600 rounded-3xl flex items-center justify-center mx-auto text-3xl">💬</div>
+                  <h4 className="font-black text-lg">تواصل معنا واتساب</h4>
+                  <p className="text-xs text-slate-500 font-bold">فريق الدعم الفني متواجد لخدمتك على مدار الساعة</p>
+                  <a 
+                    href={`https://wa.me/${systemSettings.support?.whatsapp || ''}`} 
+                    target="_blank" 
+                    rel="noreferrer"
+                    className="block w-full py-4 bg-emerald-500 text-white rounded-2xl font-black text-sm shadow-lg shadow-emerald-100 dark:shadow-none text-center"
+                  >
+                    فتح المحادثة الآن ⚡
+                  </a>
+                </div>
+                <div className="glass-card p-8 rounded-[3rem] border bg-white dark:bg-white/5 text-center space-y-4">
+                  <div className="w-16 h-16 bg-rose-50 text-rose-600 rounded-3xl flex items-center justify-center mx-auto text-3xl">📧</div>
+                  <h4 className="font-black text-lg">البريد الإلكتروني</h4>
+                  <p className="text-xs text-slate-500 font-bold">للاستفسارات الرسمية والشكاوى والمقترحات</p>
+                  <a 
+                    href={`mailto:${systemSettings.support?.email || ''}`}
+                    className="block w-full py-4 bg-slate-800 text-white rounded-2xl font-black text-sm shadow-lg text-center"
+                  >
+                    إرسال إيميل ✉️
+                  </a>
+                </div>
+              </div>
+
+              <div className="glass-card p-8 rounded-[3rem] border bg-white dark:bg-white/5 space-y-6">
+                <h4 className="font-black text-xl">أرسل لنا رسالة</h4>
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                  <input type="text" placeholder="الموضوع" className="w-full bg-slate-50 dark:bg-white/5 p-4 rounded-2xl border text-xs font-bold outline-none" />
+                  <select className="w-full bg-slate-50 dark:bg-white/5 p-4 rounded-2xl border text-xs font-bold outline-none">
+                    <option>استفسار عام</option>
+                    <option>مشكلة في الشحن</option>
+                    <option>مشكلة في شراء كرت</option>
+                    <option>اقتراح تحسين</option>
+                  </select>
+                  <textarea placeholder="اكتب تفاصيل رسالتك هنا..." rows={4} className="col-span-full w-full bg-slate-50 dark:bg-white/5 p-4 rounded-2xl border text-xs font-bold outline-none resize-none"></textarea>
+                  <button className="col-span-full py-4 bg-indigo-600 text-white rounded-2xl font-black text-sm shadow-lg">إرسال الرسالة ✨</button>
+                </div>
+              </div>
+            </div>
+          )}
+
+          {/* Settings Section */}
+          {activeSection === 'settings' && (
+            <div className="max-w-md mx-auto space-y-8">
+              <div className="glass-card p-8 rounded-[3rem] border bg-white dark:bg-white/5 space-y-6 shadow-xl">
+                <div className="w-20 h-20 bg-indigo-600/10 text-indigo-600 rounded-3xl flex items-center justify-center mx-auto text-4xl">🔐</div>
+                <div className="text-center">
+                  <h4 className="font-black text-xl text-slate-900 dark:text-white">تغيير كلمة المرور</h4>
+                  <p className="text-xs text-slate-500 font-bold mt-1">حافظ على أمان حسابك بتحديث كلمة السر دورياً</p>
+                </div>
+                
+                <div className="space-y-4 pt-4">
+                  <div className="space-y-2">
+                    <label className="text-[10px] font-black text-slate-400 mr-2 uppercase tracking-widest">كلمة المرور الجديدة</label>
+                    <input 
+                      type="password" 
+                      value={passForm.new}
+                      onChange={(e) => setPassForm({...passForm, new: e.target.value})}
+                      className="w-full bg-slate-50 dark:bg-white/5 p-4 rounded-2xl border text-xs font-bold outline-none focus:ring-2 focus:ring-indigo-500/50" 
+                      placeholder="أدخل كلمة المرور الجديدة"
+                    />
+                  </div>
+                  <div className="space-y-2">
+                    <label className="text-[10px] font-black text-slate-400 mr-2 uppercase tracking-widest">تأكيد كلمة المرور</label>
+                    <input 
+                      type="password" 
+                      value={passForm.confirm}
+                      onChange={(e) => setPassForm({...passForm, confirm: e.target.value})}
+                      className="w-full bg-slate-50 dark:bg-white/5 p-4 rounded-2xl border text-xs font-bold outline-none focus:ring-2 focus:ring-indigo-500/50" 
+                      placeholder="كرر كلمة المرور مرة أخرى"
+                    />
+                  </div>
+                  <button onClick={handleUpdatePassword} className="w-full py-4 bg-indigo-600 text-white rounded-2xl font-black text-sm shadow-lg shadow-indigo-100 dark:shadow-none active:scale-95 transition-all mt-4">تحديث كلمة السر الآمنة ✨</button>
+                </div>
+              </div>
+
+              <div className="glass-card p-6 rounded-[2.5rem] border bg-white dark:bg-white/5 flex items-center justify-between">
+                <div className="flex items-center gap-3">
+                  <div className="w-10 h-10 bg-slate-100 dark:bg-white/5 rounded-xl flex items-center justify-center text-slate-500">📱</div>
+                  <div>
+                    <p className="text-xs font-black">إصدار التطبيق</p>
+                    <p className="text-[10px] text-slate-400 font-bold">v2.4.0 (Stable)</p>
+                  </div>
+                </div>
+                <span className="px-3 py-1 bg-emerald-50 text-emerald-600 rounded-full text-[10px] font-black">محدث ✅</span>
+              </div>
             </div>
           )}
         </div>
       </main>
 
       {/* Modals */}
+      {/* Top-up Modal */}
       {showPointsModal && (
-        <div className="fixed inset-0 z-[200] flex items-center justify-center p-4 bg-black/70 backdrop-blur-md">
-           <div className="glass-card w-full max-w-sm p-6 rounded-[2rem] bg-white dark:bg-indigo-950 shadow-2xl space-y-4">
-              <h3 className="text-lg font-black text-indigo-600 border-b dark:border-white/5 pb-2">📥 شحن الرصيد</h3>
-              <div className="space-y-3">
-                 <input type="number" placeholder="عدد النقاط" value={form.amount} onChange={e => setForm({...form, amount: e.target.value})} className="w-full bg-slate-50 dark:bg-slate-900 p-3.5 rounded-xl border text-sm font-black text-indigo-600 outline-none" />
-                 <select value={form.method} onChange={e => setForm({...form, method: e.target.value})} className="w-full bg-slate-50 dark:bg-slate-900 p-3.5 rounded-xl border text-[10px] font-bold outline-none">
-                    <option value="">-- اختر البنك --</option>
-                    {banks.map(b => <option key={b.id} value={b.bankName}>{b.bankName}</option>)}
-                 </select>
-                 {selectedBank && (
-                   <div className="p-3 bg-indigo-600 text-white rounded-xl text-center animate-in zoom-in duration-300"><p className="text-[8px] opacity-70">حول للحساب:</p><p className="font-black text-xs">{selectedBank.accountHolder}</p><p className="font-mono text-[10px] tracking-widest">{selectedBank.accountNumber}</p></div>
-                 )}
-                 <input type="text" placeholder="رقم الحوالة (المرجع)" value={form.ref} onChange={e => setForm({...form, ref: e.target.value})} className="w-full bg-slate-50 dark:bg-slate-900 p-3.5 rounded-xl border text-xs font-mono outline-none" />
-                 <input type="text" placeholder="اسم المودع الرباعي" value={form.client} onChange={e => setForm({...form, client: e.target.value})} className="w-full bg-slate-50 dark:bg-slate-900 p-3.5 rounded-xl border text-xs font-black outline-none" />
-                 <div className="flex gap-2 pt-2">
-                    <button onClick={() => setShowPointsModal(false)} className="flex-1 py-3.5 bg-slate-100 dark:bg-white/10 rounded-xl font-black text-[10px]">إلغاء</button>
-                    <button onClick={() => { if(!form.amount || !form.ref || !form.client) return showNotification('أكمل البيانات', 'error'); StorageService.createPointsRequest(user.id, user.fullName, parseInt(form.amount), form.method, form.ref, form.client); showNotification('تم الإرسال ✅'); setShowPointsModal(false); }} className="flex-1 py-3.5 bg-indigo-600 text-white rounded-xl font-black text-[10px]">إرسال</button>
-                 </div>
+        <div className="fixed inset-0 z-[200] flex items-center justify-center p-4 bg-black/60 backdrop-blur-md animate-in fade-in duration-300">
+          <div className="glass-card w-full max-w-sm p-8 rounded-[3rem] bg-white dark:bg-indigo-950 shadow-2xl space-y-6">
+            <div className="flex justify-between items-center border-b dark:border-white/5 pb-4">
+              <h3 className="text-xl font-black text-indigo-600">📥 شحن الرصيد</h3>
+              <button onClick={() => setShowPointsModal(false)} className="text-slate-400 hover:text-rose-500"><X size={20} /></button>
+            </div>
+            
+            <div className="space-y-4">
+              <div className="space-y-1">
+                <label className="text-[10px] font-black text-slate-400 mr-2 uppercase tracking-widest">المبلغ المطلوب</label>
+                <input 
+                  type="number" 
+                  placeholder="عدد النقاط" 
+                  value={topupForm.amount}
+                  onChange={e => setTopupForm({...topupForm, amount: e.target.value})}
+                  className="w-full bg-slate-50 dark:bg-slate-900 p-4 rounded-2xl border text-lg font-black text-indigo-600 outline-none focus:ring-2 focus:ring-indigo-500/50" 
+                />
               </div>
-           </div>
+              
+              <div className="space-y-1">
+                <label className="text-[10px] font-black text-slate-400 mr-2 uppercase tracking-widest">وسيلة الدفع</label>
+                <select 
+                  value={topupForm.method}
+                  onChange={e => setTopupForm({...topupForm, method: e.target.value})}
+                  className="w-full bg-slate-50 dark:bg-slate-900 p-4 rounded-2xl border text-xs font-bold outline-none"
+                >
+                  <option value="">-- اختر البنك / المحفظة --</option>
+                  {banks.map(b => <option key={b.id} value={b.bankName}>{b.bankName}</option>)}
+                </select>
+              </div>
+
+              {topupForm.method && banks.find(b => b.bankName === topupForm.method) && (
+                <div className="p-4 bg-indigo-600 text-white rounded-2xl text-center space-y-1 animate-in zoom-in duration-300">
+                  <p className="text-[10px] opacity-70 font-bold">حول للمساب التالي:</p>
+                  <p className="font-black text-sm">{banks.find(b => b.bankName === topupForm.method)?.accountHolder}</p>
+                  <p className="font-mono text-xs tracking-widest">{banks.find(b => b.bankName === topupForm.method)?.accountNumber}</p>
+                </div>
+              )}
+
+              <div className="space-y-1">
+                <label className="text-[10px] font-black text-slate-400 mr-2 uppercase tracking-widest">رقم المرجع (الحوالة)</label>
+                <input 
+                  type="text" 
+                  placeholder="رقم العملية" 
+                  value={topupForm.ref}
+                  onChange={e => setTopupForm({...topupForm, ref: e.target.value})}
+                  className="w-full bg-slate-50 dark:bg-slate-900 p-4 rounded-2xl border text-xs font-mono outline-none" 
+                />
+              </div>
+
+              <div className="space-y-1">
+                <label className="text-[10px] font-black text-slate-400 mr-2 uppercase tracking-widest">اسم المودع</label>
+                <input 
+                  type="text" 
+                  placeholder="الاسم الرباعي" 
+                  value={topupForm.client}
+                  onChange={e => setTopupForm({...topupForm, client: e.target.value})}
+                  className="w-full bg-slate-50 dark:bg-slate-900 p-4 rounded-2xl border text-xs font-black outline-none" 
+                />
+              </div>
+
+              <button 
+                onClick={() => {
+                  if(!topupForm.amount || !topupForm.ref || !topupForm.client) return showNotification('أكمل البيانات', 'error');
+                  StorageService.createPointsRequest(user.id, user.fullName, parseInt(topupForm.amount), topupForm.method, topupForm.ref, topupForm.client);
+                  showNotification('تم إرسال طلب الشحن بنجاح ✅');
+                  setShowPointsModal(false);
+                  setTopupForm({ amount: '', method: '', ref: '', client: '' });
+                  refreshData();
+                }}
+                className="w-full py-4 bg-indigo-600 text-white rounded-2xl font-black text-sm shadow-xl active:scale-95 transition-all"
+              >
+                إرسال الطلب للمراجعة 🚀
+              </button>
+            </div>
+          </div>
         </div>
       )}
 
-      {showConfirm && (
-        <div className="fixed inset-0 z-[200] flex items-center justify-center p-4 bg-black/80 backdrop-blur-md">
-           <div className="glass-card w-full max-w-xs p-8 rounded-[2rem] bg-white dark:bg-indigo-950 text-center space-y-4">
-              <div className="w-16 h-16 bg-indigo-600 text-white rounded-full flex items-center justify-center mx-auto text-2xl shadow-lg">🛍️</div>
-              <h3 className="text-base font-black">تأكيد الشراء</h3>
-              <p className="text-[9px] text-slate-500 font-bold px-2">شراء {showConfirm.qty} كرت فئة "{showConfirm.cat.name}" بخصم {showConfirm.qty * showConfirm.cat.pointsPrice} نقطة؟</p>
-              <div className="flex gap-2 pt-4">
-                 <button onClick={() => setShowConfirm(null)} className="flex-1 py-3 bg-slate-100 dark:bg-white/10 rounded-xl font-black text-[10px]">تراجع</button>
-                 <button onClick={handleBuy} className="flex-1 py-3 bg-indigo-600 text-white rounded-xl font-black text-[10px] active:scale-95 transition-all">تأكيد وشراء ✅</button>
+      {/* Shopping Categories Modal */}
+      {selectedAgent && (
+        <div className="fixed inset-0 z-[200] flex items-center justify-center p-4 bg-black/60 backdrop-blur-md animate-in fade-in duration-300">
+          <div className="glass-card w-full max-w-4xl p-8 rounded-[3rem] bg-white dark:bg-indigo-950 shadow-2xl space-y-6 max-h-[90vh] overflow-y-auto">
+            <div className="flex justify-between items-center border-b dark:border-white/5 pb-4 sticky top-0 bg-white dark:bg-indigo-950 z-10">
+              <div className="flex items-center gap-3">
+                <div className="w-10 h-10 bg-indigo-50 text-indigo-600 rounded-xl flex items-center justify-center text-xl">📡</div>
+                <div>
+                  <h3 className="text-xl font-black text-slate-900 dark:text-white">فئات شبكة {selectedAgent.networkName}</h3>
+                  <p className="text-[10px] text-slate-400 font-bold uppercase tracking-widest">اختر الفئة والكمية المطلوبة</p>
+                </div>
               </div>
-           </div>
+              <button onClick={() => setSelectedAgent(null)} className="text-slate-400 hover:text-rose-500"><X size={24} /></button>
+            </div>
+
+            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
+              {categories.map(c => {
+                const available = stockMap[c.id] || 0;
+                const qty = qtyMap[c.id] || 1;
+                return (
+                  <div key={c.id} className="glass-card p-6 rounded-[2.5rem] border bg-slate-50 dark:bg-white/5 space-y-4 hover:shadow-lg transition-all border-transparent hover:border-indigo-200">
+                    <div className="flex justify-between items-start">
+                      <div>
+                        <h4 className="font-black text-base text-slate-900 dark:text-white">{c.name}</h4>
+                        <span className="text-[10px] text-indigo-600 font-black bg-indigo-50 px-2 py-0.5 rounded-md mt-1 inline-block">{c.dataSize}</span>
+                      </div>
+                      <div className={cn(
+                        "text-[10px] font-black px-3 py-1 rounded-full",
+                        available > 0 ? "bg-emerald-50 text-emerald-600" : "bg-rose-50 text-rose-600"
+                      )}>
+                        {available > 0 ? `متوفر: ${available}` : 'نفد'}
+                      </div>
+                    </div>
+
+                    <div className="flex items-center justify-between p-3 bg-white dark:bg-slate-900 rounded-2xl shadow-inner">
+                      <div className="flex items-center gap-3">
+                        <button 
+                          onClick={() => setQtyMap({...qtyMap, [c.id]: Math.max(1, qty - 1)})}
+                          className="w-10 h-10 bg-slate-100 dark:bg-white/5 rounded-xl font-black text-lg hover:bg-indigo-600 hover:text-white transition-all"
+                        >-</button>
+                        <span className="w-8 text-center font-black text-base">{qty}</span>
+                        <button 
+                          onClick={() => setQtyMap({...qtyMap, [c.id]: Math.min(available, qty + 1)})}
+                          className="w-10 h-10 bg-slate-100 dark:bg-white/5 rounded-xl font-black text-lg hover:bg-indigo-600 hover:text-white transition-all"
+                        >+</button>
+                      </div>
+                      <div className="text-left">
+                        <p className="text-[8px] font-black text-slate-400 uppercase tracking-widest">السعر</p>
+                        <p className="text-xl font-black text-indigo-600">{c.pointsPrice * qty} <span className="text-[10px]">ن</span></p>
+                      </div>
+                    </div>
+
+                    <button 
+                      disabled={available === 0}
+                      onClick={() => setShowConfirm({ cat: c, qty })}
+                      className={cn(
+                        "w-full py-4 rounded-2xl font-black text-xs shadow-lg transition-all active:scale-95",
+                        available > 0 ? "bg-indigo-600 text-white" : "bg-slate-200 text-slate-400 cursor-not-allowed"
+                      )}
+                    >
+                      {available > 0 ? 'شراء الآن ⚡' : 'غير متوفر'}
+                    </button>
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Confirmation Modal */}
+      {showConfirm && (
+        <div className="fixed inset-0 z-[300] flex items-center justify-center p-4 bg-black/80 backdrop-blur-md animate-in zoom-in duration-200">
+          <div className="glass-card w-full max-w-xs p-8 rounded-[3rem] bg-white dark:bg-indigo-950 text-center space-y-6 shadow-2xl">
+            <div className="w-20 h-20 bg-indigo-600 text-white rounded-[2rem] flex items-center justify-center mx-auto text-4xl shadow-xl shadow-indigo-200 rotate-12">🛍️</div>
+            <div>
+              <h3 className="text-xl font-black text-slate-900 dark:text-white">تأكيد الشراء</h3>
+              <p className="text-xs text-slate-500 font-bold mt-2 px-4 leading-relaxed">
+                هل أنت متأكد من شراء {showConfirm.qty} كرت فئة "{showConfirm.cat.name}"؟ 
+                سيتم خصم {showConfirm.qty * showConfirm.cat.pointsPrice} نقطة من رصيدك.
+              </p>
+            </div>
+            <div className="flex gap-3 pt-2">
+              <button onClick={() => setShowConfirm(null)} className="flex-1 py-4 bg-slate-100 dark:bg-white/5 rounded-2xl font-black text-xs text-slate-500">تراجع</button>
+              <button onClick={handleBuy} className="flex-1 py-4 bg-indigo-600 text-white rounded-2xl font-black text-xs shadow-lg active:scale-95 transition-all">تأكيد وشراء ✅</button>
+            </div>
+          </div>
         </div>
       )}
     </div>

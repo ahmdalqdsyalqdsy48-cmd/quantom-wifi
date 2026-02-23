@@ -1,7 +1,7 @@
 import { 
   User, UserRole, Agent, Category, Card, CardStatus, 
   Order, Status, PointRequest, BankAccount, SettlementReport, AgentBankDetails,
-  SystemSettings, AgentVisibleTabs, TabConfig, AgentTabsConfig, UserTabsConfig, DynamicTab
+  SystemSettings, AgentVisibleTabs, TabConfig, AgentTabsConfig, UserTabsConfig, DynamicTab, UserDashboardLayout
 } from '../types';
 
 const SECRET_KEY = 'QUANTUM_WIFI_ULTRA_SECURE_KEY_2025';
@@ -53,17 +53,38 @@ const setDB = (key: string, data: any) => localStorage.setItem(key, JSON.stringi
 
 export const StorageService = {
   init: () => {
-    if (!localStorage.getItem(STORAGE_KEYS.USERS)) {
-      const master = { 
-        id: 'master_user', fullName: 'أحمد القدسي', email: '774578241', 
-        password: Security.hashPassword('admin'), role: UserRole.ADMIN, pointsBalance: 999999, isActive: true, status: 'ACTIVE', createdAt: new Date().toISOString()
+    const users = getDB<User[]>(STORAGE_KEYS.USERS, []);
+    const adminPhone = '774578241';
+    const adminEmail = 'ahmdalqdsyalqdsy48@gmail.com';
+    
+    const adminIndex = users.findIndex(u => u.id === 'master_user' || u.email === adminEmail || u.phone === adminPhone);
+    
+    if (adminIndex === -1) {
+      const newAdmin: User = { 
+        id: 'master_user', 
+        fullName: 'أحمد القدسي', 
+        email: adminEmail, 
+        phone: adminPhone,
+        password: Security.hashPassword('75486958'), 
+        role: UserRole.ADMIN, 
+        pointsBalance: 999999, 
+        isActive: true, 
+        status: 'ACTIVE', 
+        createdAt: new Date().toISOString()
       };
-      setDB(STORAGE_KEYS.USERS, [master]);
+      setDB(STORAGE_KEYS.USERS, [newAdmin, ...users]);
+    } else {
+      // Force update master admin credentials
+      const admin = users[adminIndex];
+      admin.phone = adminPhone;
+      admin.password = Security.hashPassword('75486958');
+      users[adminIndex] = admin;
+      setDB(STORAGE_KEYS.USERS, users);
     }
   },
 
   resetSystem: () => {
-    const master = getDB<User[]>(STORAGE_KEYS.USERS, []).find(u => u.email === '774578241');
+    const master = getDB<User[]>(STORAGE_KEYS.USERS, []).find(u => u.id === 'master_user');
     const avatar = localStorage.getItem(STORAGE_KEYS.ADMIN_AVATAR);
     localStorage.clear();
     if (master) setDB(STORAGE_KEYS.USERS, [master]);
@@ -72,9 +93,9 @@ export const StorageService = {
     window.location.reload();
   },
 
-  authenticate: async (email: string, pass: string): Promise<User | string> => {
+  authenticate: async (identifier: string, pass: string): Promise<User | string> => {
     const users = getDB<User[]>(STORAGE_KEYS.USERS, []);
-    const user = users.find(u => u.email === email);
+    const user = users.find(u => u.phone === identifier || u.email === identifier);
     if (!user) return "المستخدم غير موجود";
     if (user.password !== Security.hashPassword(pass)) return "كلمة المرور خاطئة";
     if (!user.isActive) return "الحساب معطل من قبل الإدارة.";
@@ -117,7 +138,7 @@ export const StorageService = {
 
   // --- Core Getters ---
   getAgents: () => getDB<Agent[]>(STORAGE_KEYS.USERS, []).filter(u => u.role === UserRole.AGENT),
-  getManagers: () => getDB<User[]>(STORAGE_KEYS.USERS, []).filter(u => u.role === UserRole.MANAGER || (u.role === UserRole.ADMIN && u.email !== '774578241')),
+  getManagers: () => getDB<User[]>(STORAGE_KEYS.USERS, []).filter(u => u.role === UserRole.MANAGER || (u.role === UserRole.ADMIN && u.email !== 'ahmdalqdsyalqdsy48@gmail.com')),
   getUsers: () => getDB<User[]>(STORAGE_KEYS.USERS, []),
   getBankAccounts: () => getDB<BankAccount[]>(STORAGE_KEYS.BANKS, []),
   getAllCards: () => getDB<Card[]>(STORAGE_KEYS.KROOT, []),
@@ -146,7 +167,7 @@ export const StorageService = {
   },
   deleteUser: (id: string) => {
     const users = getDB<User[]>(STORAGE_KEYS.USERS, []);
-    const filtered = users.filter(u => u.id !== id || u.email === '774578241');
+    const filtered = users.filter(u => u.id !== id || u.email === 'ahmdalqdsyalqdsy48@gmail.com');
     setDB(STORAGE_KEYS.USERS, filtered);
   },
 
@@ -311,7 +332,20 @@ export const StorageService = {
   },
   deleteBankAccount: (id: string) => setDB(STORAGE_KEYS.BANKS, getDB<BankAccount[]>(STORAGE_KEYS.BANKS, []).filter(b => b.id !== id)),
   decryptCardCode: (val: string) => Security.decrypt(val),
-  registerUser: (data: any) => setDB(STORAGE_KEYS.USERS, [...getDB<User[]>(STORAGE_KEYS.USERS, []), { ...data, id: `U-${Date.now()}`, pointsBalance: 0, isActive: true, status: 'ACTIVE', createdAt: new Date().toISOString(), password: Security.hashPassword(data.password) }]),
+  registerUser: (data: any) => {
+    const users = getDB<User[]>(STORAGE_KEYS.USERS, []);
+    const newUser: User = { 
+      ...data, 
+      id: `U-${Date.now()}`, 
+      pointsBalance: 0, 
+      isActive: true, 
+      status: 'ACTIVE', 
+      createdAt: new Date().toISOString(), 
+      password: Security.hashPassword(data.password),
+      email: data.email || '' // Maintain email for compatibility if provided
+    };
+    setDB(STORAGE_KEYS.USERS, [...users, newUser]);
+  },
 
   // === System Settings ===
   getDefaultAgentTabs: (): AgentTabsConfig => ({
@@ -405,6 +439,10 @@ export const StorageService = {
         sales: true,
         settlements: true,
         settings: true,
+      },
+      support: {
+        whatsapp: '967700000000',
+        email: 'support@quantum.com'
       }
     };
     const saved = localStorage.getItem(STORAGE_KEYS.SYSTEM_SETTINGS);
@@ -472,6 +510,90 @@ export const StorageService = {
     StorageService.saveSystemSettings(settings);
   },
 
+  // === User Dashboard Layout (Phase 1) ===
+  getDefaultUserLayout: (): UserDashboardLayout => {
+    return {
+      sections: [
+        {
+          id: 'overview',
+          label: 'نظرة عامة',
+          icon: '📊',
+          order: 0,
+          enabled: true,
+          subTabs: [
+            {
+              id: 'summary',
+              label: 'الملخص',
+              contentType: 'user_summary',
+              content: {},
+              enabled: true,
+              order: 0,
+            },
+            {
+              id: 'activities',
+              label: 'النشاطات الأخيرة',
+              contentType: 'recent_activities',
+              content: {},
+              enabled: true,
+              order: 1,
+            }
+          ]
+        },
+        {
+          id: 'shopping',
+          label: 'تسوق الآن',
+          icon: '🛒',
+          order: 1,
+          enabled: true,
+          subTabs: [
+            {
+              id: 'categories',
+              label: 'الفئات',
+              contentType: 'builtin',
+              content: { type: 'shopping' },
+              enabled: true,
+              order: 0,
+            }
+          ]
+        },
+        {
+          id: 'settings',
+          label: 'إعدادات الأمان',
+          icon: '🔐',
+          order: 2,
+          enabled: true,
+          subTabs: [
+            {
+              id: 'password',
+              label: 'تغيير كلمة المرور',
+              contentType: 'builtin',
+              content: { type: 'password' },
+              enabled: true,
+              order: 0,
+            }
+          ]
+        }
+      ]
+    };
+  },
+
+  saveUserLayout: (layout: UserDashboardLayout): void => {
+    localStorage.setItem('qw_user_layout', JSON.stringify(layout));
+  },
+
+  getUserLayout: (): UserDashboardLayout => {
+    const defaultLayout = StorageService.getDefaultUserLayout();
+    const saved = localStorage.getItem('qw_user_layout');
+    if (saved) {
+      try {
+        return { ...defaultLayout, ...JSON.parse(saved) };
+      } catch (e) {
+        return defaultLayout;
+      }
+    }
+    return defaultLayout;
+  },
+
   // === Notifications ===
   getNotifications: (userId?: string) => {
     const all = getDB<any[]>(STORAGE_KEYS.NOTIFICATIONS, []);
@@ -500,6 +622,29 @@ export const StorageService = {
   markAllNotificationsRead: (userId: string) => {
     const all = getDB<any[]>(STORAGE_KEYS.NOTIFICATIONS, []);
     setDB(STORAGE_KEYS.NOTIFICATIONS, all.map(n => (n.userId === userId || n.userId === 'all') ? { ...n, read: true } : n));
+  },
+
+  // === Favorites & Deposits ===
+  toggleFavorite: (userId: string, agentId: string) => {
+    const users = StorageService.getUsers();
+    const user = users.find(u => u.id === userId);
+    if (!user) return;
+    
+    const favorites = user.favorites || [];
+    const isFavorite = favorites.includes(agentId);
+    const newFavorites = isFavorite 
+      ? favorites.filter(id => id !== agentId)
+      : [...favorites, agentId];
+      
+    StorageService.updateUser(userId, { favorites: newFavorites });
+  },
+
+  getUserDeposits: (userId: string) => {
+    return StorageService.getPointsRequests().filter(r => r.userId === userId);
+  },
+
+  logout: () => {
+    localStorage.removeItem('qw_current_user');
   },
 
   updateAgentVisibleTabs: (tabs: Partial<AgentVisibleTabs>): void => {

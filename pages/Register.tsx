@@ -4,7 +4,7 @@ import { StorageService } from '../services/storage';
 import { UserRole } from '../types';
 
 const Register: React.FC = () => {
-  const [formData, setFormData] = useState({ fullName: '', email: '', password: '' });
+  const [formData, setFormData] = useState({ fullName: '', phone: '', password: '' });
   const [showPassword, setShowPassword] = useState(false);
   const [success, setSuccess] = useState(false);
 
@@ -44,12 +44,12 @@ const Register: React.FC = () => {
         <div>
           <label className="block text-xs font-bold text-slate-500 dark:text-slate-500 mb-2 uppercase tracking-widest px-1">رقم الهاتف</label>
           <input 
-            type="email" 
+            type="tel" 
             required
-            value={formData.email}
-            onChange={e => setFormData({...formData, email: e.target.value})}
+            value={formData.phone}
+            onChange={e => setFormData({...formData, phone: e.target.value})}
             className="w-full bg-slate-50 dark:bg-slate-900/80 border border-slate-200 dark:border-slate-800 rounded-2xl px-5 py-3.5 text-slate-900 dark:text-white outline-none focus:border-indigo-500 transition-all placeholder-slate-400"
-            placeholder="yourname@domain.com"
+            placeholder="77xxxxxxx"
           />
         </div>
         <div className="relative">

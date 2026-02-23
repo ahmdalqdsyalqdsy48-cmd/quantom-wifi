@@ -1,6 +1,6 @@
 
 import React, { useState, useEffect, useMemo, useTransition, useRef } from 'react';
-import { User, UserRole, Status, PointRequest, SettlementReport, BankAccount, Card, CardStatus, Order, Agent, MikroTikConfig, SystemSettings, AgentVisibleTabs, TabConfig, DynamicTab, ContentType } from '../types';
+import { User, UserRole, Status, PointRequest, SettlementReport, BankAccount, Card, CardStatus, Order, Agent, MikroTikConfig, SystemSettings, AgentVisibleTabs, TabConfig, DynamicTab, ContentType, UserDashboardLayout } from '../types';
 import { StorageService, SystemLog } from '../services/storage';
 import { useNotification } from '../components/Layout';
 // @ts-ignore
@@ -114,7 +114,7 @@ const AdminDashboard: React.FC<{ currentUser: User }> = ({ currentUser }) => {
   
   // --- UI State ---
   const [isSidebarOpen, setIsSidebarOpen] = useState(true);
-  const [activeSection, setActiveSection] = useState<'home' | 'requests' | 'agents' | 'managers' | 'finance' | 'banks' | 'reports' | 'settings'>('home');
+  const [activeSection, setActiveSection] = useState<'home' | 'requests' | 'agents' | 'managers' | 'finance' | 'banks' | 'reports' | 'monitoring' | 'activity_log' | 'settings'>('home');
   const [reportTab, setReportTab] = useState<'sales' | 'shipping' | 'users' | 'agents_perf'>('sales');
 
   // --- Data State ---
@@ -162,10 +162,11 @@ const AdminDashboard: React.FC<{ currentUser: User }> = ({ currentUser }) => {
 
   // MikroTik Config State
   const [mikroTikConfig, setMikroTikConfig] = useState<MikroTikConfig>({ host: '', port: '8728', username: '', password: '', mode: 'MANUAL' });
+  const [userLayout, setUserLayout] = useState<UserDashboardLayout>(StorageService.getDefaultUserLayout());
 
   // --- Modals State ---
   const [showUserModal, setShowUserModal] = useState(false);
-  const [userForm, setUserForm] = useState({ id: '', fullName: '', email: '', password: '', role: UserRole.AGENT, networkName: '', profitPercentage: 0, isActive: true });
+  const [userForm, setUserForm] = useState({ id: '', fullName: '', email: '', phone: '', password: '', role: UserRole.AGENT, networkName: '', profitPercentage: 0, isActive: true });
   const [isEditMode, setIsEditMode] = useState(false);
   
   // System Bank Modal State
@@ -214,6 +215,7 @@ const AdminDashboard: React.FC<{ currentUser: User }> = ({ currentUser }) => {
     setStatOffsets(StorageService.getStatOffsets());
     
     setSystemSettings(StorageService.getSystemSettings());
+    setUserLayout(StorageService.getUserLayout());
 
     const savedMikroTik = localStorage.getItem('qw_mikrotik_config');
     if(savedMikroTik) setMikroTikConfig(JSON.parse(savedMikroTik));
@@ -337,8 +339,8 @@ const AdminDashboard: React.FC<{ currentUser: User }> = ({ currentUser }) => {
   };
 
   const handleSaveUser = () => {
-        if (!userForm.fullName || !userForm.email || (!userForm.id && !userForm.password)) {
-            showNotification('يرجى ملء كافة الحقول الأساسية', 'error');
+        if (!userForm.fullName || (!userForm.email && !userForm.phone) || (!userForm.id && !userForm.password)) {
+            showNotification('يرجى ملء كافة الحقول الأساسية (الاسم ورقم الهاتف أو البريد)', 'error');
             return;
         }
         
@@ -370,7 +372,8 @@ const AdminDashboard: React.FC<{ currentUser: User }> = ({ currentUser }) => {
       setUserForm({
           id: user.id,
           fullName: user.fullName,
-          email: user.email,
+          email: user.email || '',
+          phone: user.phone || '',
           password: '', // Password placeholder handled in modal
           role: user.role,
           networkName: user.role === UserRole.AGENT ? (user as Agent).networkName : '',
@@ -478,7 +481,8 @@ const AdminDashboard: React.FC<{ currentUser: User }> = ({ currentUser }) => {
             return (
                 <div className="grid grid-cols-2 gap-3 animate-in fade-in zoom-in duration-300">
                     <DetailBox label="الاسم الكامل" value={u.fullName} icon="👤" color="bg-indigo-50 border-indigo-200 text-indigo-700" fullWidth />
-                    <DetailBox label="رقم الهاتف" value={u.email} icon="📧" color="bg-slate-50 border-slate-200 text-slate-700" fullWidth />
+                    <DetailBox label="رقم الهاتف" value={u.phone || 'غير متوفر'} icon="📱" color="bg-emerald-50 border-emerald-200 text-emerald-700" />
+                    <DetailBox label="البريد الإلكتروني" value={u.email || 'غير متوفر'} icon="📧" color="bg-slate-50 border-slate-200 text-slate-700" />
                     <DetailBox label="نوع الحساب" value={u.role} icon="🛡️" color="bg-violet-50 border-violet-200 text-violet-700" />
                     <DetailBox label="الرصيد الحالي" value={`${u.pointsBalance} ن`} icon="💎" color="bg-cyan-50 border-cyan-200 text-cyan-700" />
                     <DetailBox label="حالة الحساب" value={u.isActive ? 'نشط' : 'موقف'} icon="⚡" color={u.isActive ? 'bg-emerald-50 border-emerald-200 text-emerald-700' : 'bg-rose-50 border-rose-200 text-rose-700'} />
@@ -873,6 +877,7 @@ const AdminDashboard: React.FC<{ currentUser: User }> = ({ currentUser }) => {
 
   const menuItems = [
     { id: 'home', label: 'الرئيسية', icon: '🏠' },
+    { id: 'activity_log', label: 'سجل النشاط المتقدم', icon: '📜' },
     { id: 'requests', label: 'طلبات الشحن والدفع', icon: '💳' },
     { id: 'agents', label: 'الوكلاء والشبكات', icon: '📡' },
     { id: 'managers', label: 'المدراء', icon: '👔' },
@@ -880,7 +885,6 @@ const AdminDashboard: React.FC<{ currentUser: User }> = ({ currentUser }) => {
     { id: 'banks', label: 'البنوك', icon: '🏦' },
     { id: 'reports', label: 'التقارير', icon: '📊' },
     { id: 'monitoring', label: 'مراقبة المستخدمين', icon: '👁️' },
-    { id: 'ui_custom', label: 'تخصيص الواجهة', icon: '🎨' },
     { id: 'settings', label: 'النظام', icon: '⚙️' },
   ];
 
@@ -949,7 +953,7 @@ const AdminDashboard: React.FC<{ currentUser: User }> = ({ currentUser }) => {
       </aside>
 
       {/* Main Content */}
-      <main className={`flex-1 transition-all duration-300 ${isSidebarOpen ? 'mr-64' : 'mr-0'} p-4 lg:p-8 max-w-full overflow-hidden`}>
+      <main className={`flex-1 transition-all duration-300 ${isSidebarOpen ? 'mr-64' : 'mr-0'} p-4 lg:p-8 max-w-full`}>
           
           <div className="lg:hidden flex justify-between items-center mb-6">
               <h1 className="font-black text-lg">لوحة التحكم</h1>
@@ -982,17 +986,46 @@ const AdminDashboard: React.FC<{ currentUser: User }> = ({ currentUser }) => {
                       ))}
                   </div>
 
-                  {/* Activity Log (No Charts Here anymore) */}
+                  {/* Quick Activity Preview */}
+                  <div className="glass-card rounded-[1.5rem] border border-slate-200 dark:border-white/5 overflow-hidden shadow-sm">
+                      <div className="p-4 bg-white dark:bg-white/5 border-b dark:border-white/10 flex justify-between items-center">
+                          <h3 className="font-black text-sm text-slate-800 dark:text-slate-200">آخر النشاطات</h3>
+                          <button onClick={() => handleNavigate('activity_log')} className="text-[10px] font-black text-indigo-600 hover:underline">عرض السجل الكامل</button>
+                      </div>
+                      <div className="overflow-x-auto">
+                          <table className="w-full text-right text-[11px] border-collapse">
+                              <tbody className="divide-y divide-slate-100 dark:divide-white/5 font-medium">
+                                  {activityLog.slice(0, 5).map((act) => (
+                                      <tr key={act.id} className="hover:bg-indigo-50/30 dark:hover:bg-white/5 transition-colors">
+                                          <td className="p-3 font-bold">{act.user}</td>
+                                          <td className="p-3 text-slate-500">{act.details}</td>
+                                          <td className="p-3 text-center font-mono font-black">{act.value}</td>
+                                          <td className="p-3 text-center text-[10px] text-slate-400" dir="ltr">{new Date(act.date).toLocaleTimeString('ar-YE')}</td>
+                                          <td className="p-3 text-center"><span className={`px-2 py-1 rounded text-[9px] ${act.type==='مبيعات'?'bg-cyan-100':act.type==='شحن'?'bg-emerald-100':act.type==='تسوية'?'bg-amber-100':'bg-slate-200'}`}>{act.type}</span></td>
+                                      </tr>
+                                  ))}
+                              </tbody>
+                          </table>
+                      </div>
+                  </div>
+              </div>
+          )}
+
+          {/* ADVANCED ACTIVITY LOG SECTION */}
+          {activeSection === 'activity_log' && (
+              <div className="space-y-6 animate-in slide-in-from-bottom-4">
+                  <SectionHeader title="سجل النشاط المتقدم" subtitle="مراقبة شاملة لجميع العمليات المالية والإدارية في النظام" />
+                  
                   <div className="glass-card rounded-[1.5rem] border border-slate-200 dark:border-white/5 overflow-hidden shadow-sm">
                       <div className="p-4 bg-white dark:bg-white/5 border-b dark:border-white/10 space-y-4">
                           <div className="flex justify-between items-center">
-                              <h3 className="font-black text-sm text-slate-800 dark:text-slate-200">سجل النشاط المتقدم (شامل)</h3>
+                              <h3 className="font-black text-sm text-slate-800 dark:text-slate-200">الفلاتر والبحث</h3>
                               <span className="text-[10px] bg-indigo-50 text-indigo-700 px-3 py-1 rounded-full font-bold border border-indigo-100">مباشر • Live</span>
                           </div>
                           
                           <div className="flex flex-col md:flex-row gap-2">
                               <div className="relative flex-1">
-                                  <input type="text" placeholder="بحث شامل..." value={logSearch} onChange={(e) => setLogSearch(e.target.value)} className="w-full p-3 pr-10 rounded-xl bg-slate-50 dark:bg-indigo-950/50 border border-slate-200 dark:border-white/10 text-xs font-bold focus:outline-none focus:border-indigo-500 transition-all" />
+                                  <input type="text" placeholder="بحث شامل (اسم، تفاصيل، شبكة)..." value={logSearch} onChange={(e) => setLogSearch(e.target.value)} className="w-full p-3 pr-10 rounded-xl bg-slate-50 dark:bg-indigo-950/50 border border-slate-200 dark:border-white/10 text-xs font-bold focus:outline-none focus:border-indigo-500 transition-all" />
                                   <span className="absolute right-3 top-3 text-slate-400">🔍</span>
                               </div>
                               <div className="relative">
@@ -1008,7 +1041,7 @@ const AdminDashboard: React.FC<{ currentUser: User }> = ({ currentUser }) => {
                           </div>
                       </div>
 
-                      <div className="overflow-x-auto min-h-[300px]">
+                      <div className="overflow-x-auto min-h-[400px]">
                           <table className="w-full text-right text-[11px] border-collapse whitespace-nowrap">
                               <thead className="bg-slate-100 dark:bg-white/10 text-slate-600 dark:text-slate-300 font-bold sticky top-0 z-10">
                                   <tr><th className="p-3">المستخدم / الوكيل</th><th className="p-3">التفاصيل</th><th className="p-3">المصدر</th><th className="p-3 text-center">القيمة</th><th className="p-3 text-center">التوقيت</th><th className="p-3 text-center">النوع</th><th className="p-3 text-center w-24">إجراء</th></tr>
@@ -1020,11 +1053,12 @@ const AdminDashboard: React.FC<{ currentUser: User }> = ({ currentUser }) => {
                                           <td className="p-3 text-slate-500">{act.details}</td>
                                           <td className="p-3 text-indigo-600">{act.network}</td>
                                           <td className="p-3 text-center font-mono font-black">{act.value}</td>
-                                          <td className="p-3 text-center text-[10px] text-slate-400" dir="ltr">{new Date(act.date).toLocaleTimeString('ar-YE')}</td>
+                                          <td className="p-3 text-center text-[10px] text-slate-400" dir="ltr">{new Date(act.date).toLocaleString('ar-YE')}</td>
                                           <td className="p-3 text-center"><span className={`px-2 py-1 rounded text-[9px] ${act.type==='مبيعات'?'bg-cyan-100':act.type==='شحن'?'bg-emerald-100':act.type==='تسوية'?'bg-amber-100':'bg-slate-200'}`}>{act.type}</span></td>
                                           <td className="p-3 text-center"><button onClick={() => { setViewModal({ isOpen: true, title: 'تفاصيل العملية', data: act.original, type: act.type }); StorageService.logAction('عرض تفاصيل', `عرض تفاصيل عملية ${act.type}`, currentUser.fullName, 'SYSTEM'); }} className="px-3 py-1 bg-indigo-50 text-indigo-700 rounded hover:bg-indigo-600 hover:text-white transition-colors">عرض</button></td>
                                       </tr>
                                   ))}
+                                  {activityLog.length === 0 && <tr><td colSpan={7} className="p-10 text-center text-slate-400 font-bold">لا توجد سجلات مطابقة للبحث</td></tr>}
                               </tbody>
                           </table>
                       </div>
@@ -1391,7 +1425,7 @@ const AdminDashboard: React.FC<{ currentUser: User }> = ({ currentUser }) => {
                                           </div>
                                           <div className="space-y-1">
                                               <h3 className="font-black text-lg text-slate-800 dark:text-white">{user.fullName}</h3>
-                                              <p className="text-xs text-slate-500 font-bold">{user.email}</p>
+                                              <p className="text-xs text-slate-500 font-bold">{user.phone || user.email}</p>
                                               <div className="flex gap-2 mt-2">
                                                   <span className={`px-3 py-1 rounded-full text-[10px] font-black border ${user.isActive ? 'bg-emerald-50 text-emerald-600 border-emerald-100' : 'bg-rose-50 text-rose-600 border-rose-100'}`}>
                                                       {user.isActive ? 'حساب نشط' : 'حساب محظور'}
@@ -1478,7 +1512,7 @@ const AdminDashboard: React.FC<{ currentUser: User }> = ({ currentUser }) => {
                                       <h3 className="text-lg font-black text-slate-800 dark:text-white leading-tight mb-1">{(u as Agent).networkName}</h3>
                                       <p className="text-xs text-slate-500 font-bold mb-1">{u.fullName}</p>
                                       <div className="flex items-center gap-2">
-                                          <span className="text-[9px] bg-slate-100 dark:bg-white/10 px-2 py-0.5 rounded-md text-slate-500">{u.email}</span>
+                                          <span className="text-[9px] bg-slate-100 dark:bg-white/10 px-2 py-0.5 rounded-md text-slate-500">{u.phone || u.email}</span>
                                           <span className="text-[9px] bg-indigo-50 text-indigo-600 px-2 py-0.5 rounded-md font-bold border border-indigo-100">ربح النظام: {(u as Agent).profitPercentage}%</span>
                                       </div>
                                   </div>
@@ -1538,7 +1572,7 @@ const AdminDashboard: React.FC<{ currentUser: User }> = ({ currentUser }) => {
                               <div className="flex justify-between items-start mb-4">
                                   <div>
                                       <h3 className="font-black text-lg">{u.fullName}</h3>
-                                      <p className="text-xs text-slate-500">{u.email}</p>
+                                      <p className="text-xs text-slate-500">{u.phone || u.email}</p>
                                   </div>
                                   <div className={`w-3 h-3 rounded-full ${u.isActive ? 'bg-emerald-500' : 'bg-rose-500'}`}></div>
                               </div>
@@ -1650,75 +1684,7 @@ const AdminDashboard: React.FC<{ currentUser: User }> = ({ currentUser }) => {
               </div>
           )}
 
-          {/* UI CUSTOMIZATION SECTION */}
-          {activeSection === 'ui_custom' && (
-            <div className="space-y-6">
-              <SectionHeader 
-                title="تخصيص واجهة المستخدم" 
-                subtitle="هيكلة القائمة الجانبية والأقسام الفرعية للوحة المستخدم" 
-                action={
-                  <button 
-                    onClick={() => {
-                      if (window.confirm('هل أنت متأكد من إعادة تعيين الواجهة للوضع الافتراضي؟')) {
-                        const defaultLayout = StorageService.getDefaultDashboardLayout();
-                        StorageService.updateDashboardLayout(defaultLayout);
-                        setSystemSettings({ ...systemSettings, dashboardLayout: defaultLayout });
-                        showNotification('تمت إعادة التعيين بنجاح', 'success');
-                      }
-                    }}
-                    className="px-4 py-2 bg-rose-50 text-rose-600 rounded-lg font-bold text-[10px]"
-                  >
-                    إعادة تعيين للافتراضي
-                  </button>
-                }
-              />
-
-              <div className="glass-card p-6 rounded-[2rem] border space-y-4">
-                <div className="flex justify-between items-center border-b pb-2">
-                  <h3 className="font-black text-sm flex items-center gap-2">📂 هيكل القائمة الجانبية (JSON)</h3>
-                  <div className="flex gap-2">
-                    <button 
-                      onClick={() => {
-                        try {
-                          const layout = JSON.parse((document.getElementById('layout-json') as HTMLTextAreaElement).value);
-                          StorageService.updateDashboardLayout(layout);
-                          setSystemSettings({ ...systemSettings, dashboardLayout: layout });
-                          showNotification('تم حفظ الهيكل الجديد بنجاح ✅', 'success');
-                        } catch (e) {
-                          showNotification('خطأ في تنسيق JSON', 'error');
-                        }
-                      }}
-                      className="px-4 py-2 bg-indigo-600 text-white rounded-lg font-bold text-[10px]"
-                    >
-                      حفظ التغييرات
-                    </button>
-                  </div>
-                </div>
-                
-                <p className="text-[10px] text-slate-500 font-bold">
-                  يمكنك تخصيص الأقسام الرئيسية والفرعية والأزرار عبر تحرير كائن JSON أدناه. 
-                  تأكد من اتباع الهيكل الصحيح لضمان عمل الواجهة.
-                </p>
-
-                <textarea 
-                  id="layout-json"
-                  defaultValue={JSON.stringify(systemSettings.dashboardLayout, null, 2)}
-                  className="w-full h-[500px] p-4 font-mono text-[10px] bg-slate-900 text-emerald-400 rounded-2xl border-none outline-none focus:ring-2 focus:ring-indigo-500/50"
-                  dir="ltr"
-                />
-              </div>
-
-              <div className="glass-card p-6 rounded-[2rem] border bg-indigo-50 dark:bg-white/5 space-y-3">
-                <h4 className="font-black text-xs text-indigo-600">💡 نصيحة للمدير</h4>
-                <ul className="text-[10px] font-bold text-slate-600 dark:text-slate-400 space-y-1 list-disc list-inside">
-                  <li>كل قسم رئيسي (Main Section) يظهر في القائمة الجانبية.</li>
-                  <li>الأقسام الفرعية (SubTabs) تظهر كتبويبات علوية داخل القسم المختار.</li>
-                  <li>يمكنك إضافة أزرار (Buttons) داخل أي قسم فرعي لتنفيذ إجراءات سريعة.</li>
-                  <li>أنواع المحتوى (ContentType) المدعومة تشمل: dashboard, user_wallet, transactions_list, purchased_cards, notifications, support, reports, text, html.</li>
-                </ul>
-              </div>
-            </div>
-          )}
+          {/* UI CUSTOMIZATION SECTION - REMOVED IN FAVOR OF SETTINGS INTEGRATION */}
 
           {activeSection === 'settings' && (
              <div className="max-w-2xl mx-auto space-y-6 animate-in slide-in-from-bottom-4">
@@ -1784,6 +1750,48 @@ const AdminDashboard: React.FC<{ currentUser: User }> = ({ currentUser }) => {
                     <button onClick={handleSaveSettings} className="w-full py-3 bg-indigo-600 text-white rounded-xl font-bold text-xs shadow-lg hover:bg-indigo-700">حفظ الإعدادات والمظهر</button>
                 </div>
 
+                {/* Support Settings */}
+                <div className="glass-card p-6 rounded-[2rem] border space-y-4">
+                    <h3 className="font-black text-sm border-b pb-2 flex items-center gap-2">📞 إعدادات الدعم الفني</h3>
+                    <div className="space-y-3">
+                        <div>
+                            <label className="block text-[10px] font-bold text-slate-500 mb-1">رقم الواتساب</label>
+                            <input 
+                                type="text" 
+                                value={systemSettings.support?.whatsapp || ''} 
+                                onChange={(e) => setSystemSettings({
+                                    ...systemSettings,
+                                    support: { ...systemSettings.support!, whatsapp: e.target.value }
+                                })}
+                                className="w-full p-3 border rounded-xl text-xs font-bold outline-none focus:border-indigo-500 dark:bg-slate-900" 
+                                placeholder="مثال: 967700000000"
+                            />
+                        </div>
+                        <div>
+                            <label className="block text-[10px] font-bold text-slate-500 mb-1">البريد الإلكتروني</label>
+                            <input 
+                                type="email" 
+                                value={systemSettings.support?.email || ''} 
+                                onChange={(e) => setSystemSettings({
+                                    ...systemSettings,
+                                    support: { ...systemSettings.support!, email: e.target.value }
+                                })}
+                                className="w-full p-3 border rounded-xl text-xs font-bold outline-none focus:border-indigo-500 dark:bg-slate-900" 
+                                placeholder="support@domain.com"
+                            />
+                        </div>
+                        <button 
+                            onClick={() => {
+                                StorageService.saveSystemSettings(systemSettings);
+                                showNotification('تم حفظ إعدادات الدعم الفني بنجاح', 'success');
+                            }} 
+                            className="w-full py-3 bg-indigo-600 text-white rounded-xl font-bold text-xs shadow-lg hover:bg-indigo-700 transition-all"
+                        >
+                            حفظ إعدادات الدعم
+                        </button>
+                    </div>
+                </div>
+
                 {/* قسم التحكم بأقسام الوكيل */}
                 <div className="glass-card p-6 rounded-[2rem] border space-y-4">
                   <h3 className="font-black text-sm border-b pb-2 flex items-center gap-2">🛠️ تكوين أقسام الوكيل</h3>
@@ -1812,7 +1820,7 @@ const AdminDashboard: React.FC<{ currentUser: User }> = ({ currentUser }) => {
                 {/* قسم تكوين أقسام المستخدم الديناميكية */}
                 <div className="glass-card p-6 rounded-[2rem] border space-y-4">
                   <div className="flex justify-between items-center border-b pb-2">
-                    <h3 className="font-black text-sm flex items-center gap-2">📱 إدارة أقسام المستخدم</h3>
+                    <h3 className="font-black text-sm flex items-center gap-2">📱 إدارة أقسام المستخدم القديمة</h3>
                     <button 
                       onClick={() => {
                         setTabForm({ label: '', icon: '', contentType: 'text', content: '', enabled: true });
@@ -1881,6 +1889,48 @@ const AdminDashboard: React.FC<{ currentUser: User }> = ({ currentUser }) => {
                         <button onClick={handleGlobalReset} className="w-full py-3 bg-rose-50 text-rose-600 border border-rose-100 rounded-xl font-black text-xs hover:bg-rose-100 flex items-center justify-center gap-2"><span>⚠️</span> تصفير النظام بالكامل</button>
                         <p className="text-[9px] text-rose-400 mt-2 text-center">تحذير: هذا الإجراء سيحذف جميع المستخدمين والعمليات والبيانات نهائياً.</p>
                     </div>
+                </div>
+
+                {/* تخصيص واجهة المستخدم (Phase 1) */}
+                <div className="glass-card p-6 rounded-[2rem] border space-y-4 mt-6">
+                  <h3 className="font-black text-sm border-b pb-2 flex items-center gap-2">🎨 تخصيص واجهة المستخدم (JSON)</h3>
+                  <p className="text-[10px] text-slate-500 font-bold">قم بتعديل هيكل الأقسام الرئيسية والفرعية حسب الرغبة.</p>
+                  <textarea
+                    value={JSON.stringify(userLayout, null, 2)}
+                    onChange={(e) => {
+                      try {
+                        const newLayout = JSON.parse(e.target.value);
+                        setUserLayout(newLayout);
+                      } catch (error) {}
+                    }}
+                    rows={15}
+                    className="w-full p-3 font-mono text-[10px] bg-slate-50 dark:bg-slate-900 border rounded-xl outline-none focus:ring-2 focus:ring-indigo-500/50"
+                    dir="ltr"
+                  />
+                  <div className="flex gap-2">
+                    <button
+                      onClick={() => {
+                        StorageService.saveUserLayout(userLayout);
+                        showNotification('تم حفظ تخطيط لوحة المستخدم ✅', 'success');
+                      }}
+                      className="px-4 py-2 bg-indigo-600 text-white rounded-lg text-xs font-bold shadow-lg hover:bg-indigo-700 transition-all"
+                    >
+                      حفظ التخطيط
+                    </button>
+                    <button
+                      onClick={() => {
+                        if (window.confirm('هل أنت متأكد من إعادة تعيين التخطيط للافتراضي؟')) {
+                          const def = StorageService.getDefaultUserLayout();
+                          setUserLayout(def);
+                          StorageService.saveUserLayout(def);
+                          showNotification('تمت إعادة التعيين للافتراضي', 'info');
+                        }
+                      }}
+                      className="px-4 py-2 bg-slate-100 text-slate-600 rounded-lg text-xs font-bold hover:bg-slate-200 transition-all"
+                    >
+                      إعادة تعيين
+                    </button>
+                  </div>
                 </div>
              </div>
           )}
@@ -2084,6 +2134,11 @@ const AdminDashboard: React.FC<{ currentUser: User }> = ({ currentUser }) => {
                 
                 <div className="space-y-2">
                     <label className="text-[10px] font-bold text-slate-500 px-1">رقم الهاتف</label>
+                    <input className="w-full p-3 border rounded-xl text-xs font-bold" placeholder="رقم الهاتف" value={userForm.phone} onChange={e=>setUserForm({...userForm, phone:e.target.value})} />
+                </div>
+
+                <div className="space-y-2">
+                    <label className="text-[10px] font-bold text-slate-500 px-1">البريد الإلكتروني (اختياري)</label>
                     <input className="w-full p-3 border rounded-xl text-xs font-bold" placeholder="البريد" value={userForm.email} onChange={e=>setUserForm({...userForm, email:e.target.value})} />
                 </div>
                 

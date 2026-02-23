@@ -1,4 +1,4 @@
-تعديل حقول تسجيل الدخول من البريد الإلكتروني إلى رقم الهاتف
+
 export enum UserRole {
   ADMIN = 'ADMIN',
   AGENT = 'AGENT',
@@ -24,7 +24,8 @@ export enum CardStatus {
 export interface User {
   id: string;
   fullName: string;
-  phone: string;
+  email: string;
+  phone?: string;
   password?: string;
   role: UserRole;
   pointsBalance: number;
@@ -98,7 +99,7 @@ export interface Card {
 export interface Order {
   id: string;
   userId: string;
-  userphone: string;
+  userEmail: string;
   userName: string;
   agentId: string;
   categoryId: string;
@@ -210,6 +211,10 @@ export interface SystemSettings {
   userTabs: UserTabsConfig;
   dashboardLayout?: UserDashboardLayout;
   agentVisibleTabs?: AgentVisibleTabs;
+  support?: {
+    whatsapp: string;
+    email: string;
+  };
 }
 
 export interface MikroTikConfig {

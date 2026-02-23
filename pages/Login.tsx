@@ -8,7 +8,7 @@ interface LoginProps {
 }
 
 const Login: React.FC<LoginProps> = ({ onLogin }) => {
-  const [email, setEmail] = useState('');
+  const [identifier, setIdentifier] = useState('');
   const [password, setPassword] = useState('');
   const [showPassword, setShowPassword] = useState(false);
   const [error, setError] = useState('');
@@ -20,7 +20,7 @@ const Login: React.FC<LoginProps> = ({ onLogin }) => {
     setIsAuthenticating(true);
     
     try {
-      const result = await StorageService.authenticate(email, password);
+      const result = await StorageService.authenticate(identifier, password);
       
       if (typeof result === 'string') {
         setError(result);
@@ -58,14 +58,14 @@ const Login: React.FC<LoginProps> = ({ onLogin }) => {
         <h2 className="text-3xl font-black mb-2 text-center text-slate-900 dark:text-white tracking-tight">الدخول الآمن</h2>
         <form onSubmit={handleSubmit} className="space-y-5">
           <div>
-            <label className="block text-xs font-bold text-slate-500 mb-2 uppercase tracking-widest px-1">رقم الهاتف</label>
+            <label className="block text-xs font-bold text-slate-500 mb-2 uppercase tracking-widest px-1">رقم الهاتف أو البريد</label>
             <input 
-              type="email" 
-              value={email}
+              type="text" 
+              value={identifier}
               autoComplete="username"
-              onChange={e => setEmail(e.target.value)}
+              onChange={e => setIdentifier(e.target.value)}
               className="w-full bg-slate-50 dark:bg-slate-900/80 border border-slate-200 dark:border-slate-800 rounded-2xl px-5 py-3.5 focus:outline-none focus:border-indigo-500 focus:ring-4 focus:ring-indigo-500/10 transition-all text-slate-900 dark:text-white"
-              placeholder="example@domain.com"
+              placeholder="77xxxxxxx أو email@domain.com"
               required
             />
           </div>
