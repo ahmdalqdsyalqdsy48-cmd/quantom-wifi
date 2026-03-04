@@ -15,17 +15,43 @@ export enum Status {
   CANCELLED = 'CANCELLED'
 }
 
+export enum TicketStatus {
+  OPEN = 'OPEN',
+  IN_PROGRESS = 'IN_PROGRESS',
+  CLOSED = 'CLOSED'
+}
+
 export enum CardStatus {
   AVAILABLE = 'AVAILABLE',
   SOLD = 'SOLD',
   ARCHIVED = 'ARCHIVED'
 }
 
+export interface SupportTicket {
+  id: string;
+  userId: string;
+  userName: string;
+  userPhone: string;
+  title: string;
+  message: string;
+  recipientType: 'ADMIN' | 'AGENT';
+  recipientId?: string; // Agent ID if recipientType is AGENT
+  recipientName: string; // "الإدارة العامة" or Agent Network Name
+  status: TicketStatus;
+  createdAt: string;
+  replies?: {
+    senderId: string;
+    senderName: string;
+    message: string;
+    createdAt: string;
+  }[];
+}
+
 export interface User {
   id: string;
   fullName: string;
-  email: string;
-  phone?: string;
+  phone: string;
+  email?: string;
   password?: string;
   role: UserRole;
   pointsBalance: number;
@@ -33,6 +59,17 @@ export interface User {
   status?: 'ACTIVE' | 'PENDING' | 'SUSPENDED';
   createdAt: string;
   favorites?: string[]; // Array of Agent IDs
+  referralCode?: string;
+  referredBy?: string;
+  loanBalance?: number;
+  luckyWheelLastSpin?: string;
+}
+
+export interface AgentContact {
+  id: string;
+  type: 'whatsapp' | 'phone' | 'email';
+  value: string;
+  isActive: boolean;
 }
 
 export interface AgentBankDetails {
@@ -49,6 +86,7 @@ export interface Agent extends User {
   microtikConfig?: MikroTikConfig;
   pin: string;
   bankAccounts?: AgentBankDetails[]; // قائمة الحسابات البنكية المتعددة
+  contacts?: AgentContact[]; // وسائل التواصل
   // Legacy support field (optional)
   savedBankDetails?: AgentBankDetails; 
 }
@@ -99,7 +137,7 @@ export interface Card {
 export interface Order {
   id: string;
   userId: string;
-  userEmail: string;
+  userPhone: string;
   userName: string;
   agentId: string;
   categoryId: string;
@@ -128,6 +166,18 @@ export interface PointRequest {
   createdAt: string;
 }
 
+export interface Deposit extends PointRequest {}
+
+export interface Transaction {
+  id: string;
+  date: string;
+  type: 'purchase' | 'deposit' | 'transfer_in' | 'transfer_out' | 'loan' | 'prize';
+  details: string;
+  amount: number;
+  balanceAfter?: number;
+  status: Status;
+}
+
 export interface BankAccount {
   id: string;
   bankName: string;
@@ -142,6 +192,7 @@ export interface AgentVisibleTabs {
   archive: boolean;    // الأرشيف
   sales: boolean;      // المبيعات
   settlements: boolean; // التسويات
+  contacts: boolean;    // وسائل التواصل
   settings: boolean;   // الإعدادات
 }
 
@@ -152,68 +203,17 @@ export interface TabConfig {
   enabled: boolean;
 }
 
-export type ContentType = 'text' | 'html' | 'table' | 'cards' | 'stats' | 'builtin' | 'user_summary' | 'full_transactions' | 'purchases_only' | 'deposits_only' | 'networks_summary' | 'recent_activities' | 'dashboard' | 'user_wallet' | 'transactions_list' | 'purchased_cards' | 'favorite_networks' | 'notifications' | 'support' | 'reports';
-
-export interface DynamicTab {
-  id: string;               // معرف فريد (مثل 'tab_1623456789')
-  label: string;            // اسم التبويب
-  icon: string;             // أيقونة (إيموجي أو نص)
-  contentType: ContentType; // نوع المحتوى
-  content: any;             // المحتوى حسب النوع (نص، HTML، مصفوفة، الخ)
-  enabled: boolean;
-  order: number;            // الترتيب
-}
-
 export interface AgentTabsConfig {
   tabs: TabConfig[];
-}
-
-export interface UserTabsConfig {
-  tabs: DynamicTab[];
-}
-
-export interface ActionButton {
-  id: string;
-  label: string;
-  icon?: string;
-  actionType: 'openModal' | 'navigate' | 'export' | 'custom';
-  actionData?: any; // e.g., { modal: 'points' }, { tab: 'transactions' }
-}
-
-export interface SubTab {
-  id: string;
-  label: string;
-  icon?: string;
-  contentType: ContentType;
-  content?: any;
-  buttons?: ActionButton[];
-  enabled: boolean;
-  order: number;
-}
-
-export interface MainSection {
-  id: string;
-  label: string;
-  icon: string;
-  subTabs: SubTab[];
-  enabled: boolean;
-  order: number;
-}
-
-export interface UserDashboardLayout {
-  sections: MainSection[];
 }
 
 export interface SystemSettings {
   maintenance: boolean;
   announcement: string;
   agentTabs: AgentTabsConfig;
-  userTabs: UserTabsConfig;
-  dashboardLayout?: UserDashboardLayout;
   agentVisibleTabs?: AgentVisibleTabs;
   support?: {
     whatsapp: string;
-    email: string;
   };
 }
 
@@ -223,4 +223,29 @@ export interface MikroTikConfig {
   username: string;
   password?: string;
   mode: 'MANUAL' | 'AUTO';
+}
+
+export interface Loan {
+  id: string;
+  userId: string;
+  amount: number;
+  status: Status;
+  createdAt: string;
+  dueDate: string;
+}
+
+export interface LuckyWheelPrize {
+  id: string;
+  userId: string;
+  prize: string;
+  value: number;
+  createdAt: string;
+}
+
+export interface FlashOffer {
+  id: string;
+  categoryId: string;
+  discountPercentage: number;
+  expiresAt: string;
+  isActive: boolean;
 }

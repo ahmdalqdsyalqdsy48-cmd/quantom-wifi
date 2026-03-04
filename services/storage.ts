@@ -1,8 +1,11 @@
 import { 
   User, UserRole, Agent, Category, Card, CardStatus, 
   Order, Status, PointRequest, BankAccount, SettlementReport, AgentBankDetails,
-  SystemSettings, AgentVisibleTabs, TabConfig, AgentTabsConfig, UserTabsConfig, DynamicTab, UserDashboardLayout
+  SystemSettings, AgentVisibleTabs, TabConfig, AgentTabsConfig,
+  Loan, LuckyWheelPrize, FlashOffer, Transaction, Deposit,
+  SupportTicket, TicketStatus
 } from '../types';
+import { googleSheetsService } from '../src/services/GoogleSheetsService';
 
 const SECRET_KEY = 'QUANTUM_WIFI_ULTRA_SECURE_KEY_2025';
 declare var CryptoJS: any;
@@ -32,7 +35,11 @@ const STORAGE_KEYS = {
   SYSTEM_LOGS: 'qw_system_logs_v1', 
   STAT_OFFSETS: 'qw_stat_offsets_v1',
   SYSTEM_SETTINGS: 'qw_system_settings',
-  NOTIFICATIONS: 'qw_notifications_v1'
+  NOTIFICATIONS: 'qw_notifications_v1',
+  LOANS: 'qw_loans_v1',
+  LUCKY_WHEEL: 'qw_lucky_wheel_v1',
+  FLASH_OFFERS: 'qw_flash_offers_v1',
+  SUPPORT_TICKETS: 'qw_support_tickets_v1'
 };
 
 export interface SystemLog {
@@ -55,15 +62,13 @@ export const StorageService = {
   init: () => {
     const users = getDB<User[]>(STORAGE_KEYS.USERS, []);
     const adminPhone = '774578241';
-    const adminEmail = 'ahmdalqdsyalqdsy48@gmail.com';
     
-    const adminIndex = users.findIndex(u => u.id === 'master_user' || u.email === adminEmail || u.phone === adminPhone);
+    const adminIndex = users.findIndex(u => u.id === 'master_user' || u.phone === adminPhone);
     
     if (adminIndex === -1) {
       const newAdmin: User = { 
         id: 'master_user', 
         fullName: 'أحمد القدسي', 
-        email: adminEmail, 
         phone: adminPhone,
         password: Security.hashPassword('75486958'), 
         role: UserRole.ADMIN, 
@@ -95,7 +100,7 @@ export const StorageService = {
 
   authenticate: async (identifier: string, pass: string): Promise<User | string> => {
     const users = getDB<User[]>(STORAGE_KEYS.USERS, []);
-    const user = users.find(u => u.phone === identifier || u.email === identifier);
+    const user = users.find(u => u.phone === identifier);
     if (!user) return "المستخدم غير موجود";
     if (user.password !== Security.hashPassword(pass)) return "كلمة المرور خاطئة";
     if (!user.isActive) return "الحساب معطل من قبل الإدارة.";
@@ -127,6 +132,53 @@ export const StorageService = {
           type
       };
       setDB(STORAGE_KEYS.SYSTEM_LOGS, [newLog, ...logs].slice(0, 200)); 
+      
+      // Push to Google Sheets
+      googleSheetsService.appendLog({
+        id: newLog.id,
+        user: newLog.performedBy,
+        details: newLog.details,
+        network: action,
+        value: '-',
+        date: newLog.timestamp,
+        type: newLog.type,
+        status: 'مكتمل'
+      });
+
+      // Periodically update stats
+      StorageService.calculateAndPushStats();
+  },
+
+  calculateAndPushStats: async () => {
+    const users = getDB<User[]>(STORAGE_KEYS.USERS, []);
+    const orders = getDB<Order[]>(STORAGE_KEYS.ORDERS, []);
+    const pointRequests = getDB<PointRequest[]>(STORAGE_KEYS.POINT_REQUESTS, []);
+    const settlements = getDB<SettlementReport[]>(STORAGE_KEYS.REPORTS, []);
+    const categories = getDB<Category[]>(STORAGE_KEYS.CATEGORIES, []);
+    const allCards = getDB<Card[]>(STORAGE_KEYS.KROOT, []);
+
+    const stats = {
+      users_active: users.filter(u => u.role === UserRole.USER && u.isActive).length,
+      users_total: users.filter(u => u.role === UserRole.USER).length,
+      agents_active: users.filter(u => u.role === UserRole.AGENT && u.isActive).length,
+      agents_total: users.filter(u => u.role === UserRole.AGENT).length,
+      managers_active: users.filter(u => u.role === UserRole.MANAGER && u.isActive).length,
+      managers_total: users.filter(u => u.role === UserRole.MANAGER).length,
+      networks_count: new Set(users.filter(u => u.role === UserRole.AGENT).map(u => (u as Agent).networkName)).size,
+      categories_count: categories.length,
+      available_cards: allCards.filter(c => c.status === CardStatus.AVAILABLE).length,
+      sold_cards: allCards.filter(c => c.status === CardStatus.SOLD).length,
+      total_sales_points: orders.reduce((acc, o) => acc + o.pointsUsed, 0),
+      agent_earnings: orders.reduce((acc, o) => acc + o.agentEarnings, 0),
+      system_profit: orders.reduce((acc, o) => acc + o.masterProfit, 0),
+      financial_operations: pointRequests.length + settlements.length,
+      pending_deposits: pointRequests.filter(r => r.status === Status.PENDING).length,
+      pending_settlements: settlements.filter(r => r.status === Status.PENDING).length,
+      approved_requests: pointRequests.filter(r => r.status === Status.COMPLETED).length + settlements.filter(r => r.status === Status.PAID).length,
+      rejected_requests: pointRequests.filter(r => r.status === Status.REJECTED).length + settlements.filter(r => r.status === Status.REJECTED).length,
+    };
+
+    await googleSheetsService.updateStats(stats);
   },
   getSystemLogs: () => getDB<SystemLog[]>(STORAGE_KEYS.SYSTEM_LOGS, []),
 
@@ -138,7 +190,7 @@ export const StorageService = {
 
   // --- Core Getters ---
   getAgents: () => getDB<Agent[]>(STORAGE_KEYS.USERS, []).filter(u => u.role === UserRole.AGENT),
-  getManagers: () => getDB<User[]>(STORAGE_KEYS.USERS, []).filter(u => u.role === UserRole.MANAGER || (u.role === UserRole.ADMIN && u.email !== 'ahmdalqdsyalqdsy48@gmail.com')),
+  getManagers: () => getDB<User[]>(STORAGE_KEYS.USERS, []).filter(u => u.role === UserRole.MANAGER || (u.role === UserRole.ADMIN && u.id !== 'master_user')),
   getUsers: () => getDB<User[]>(STORAGE_KEYS.USERS, []),
   getBankAccounts: () => getDB<BankAccount[]>(STORAGE_KEYS.BANKS, []),
   getAllCards: () => getDB<Card[]>(STORAGE_KEYS.KROOT, []),
@@ -167,7 +219,7 @@ export const StorageService = {
   },
   deleteUser: (id: string) => {
     const users = getDB<User[]>(STORAGE_KEYS.USERS, []);
-    const filtered = users.filter(u => u.id !== id || u.email === 'ahmdalqdsyalqdsy48@gmail.com');
+    const filtered = users.filter(u => u.id !== id || u.id === 'master_user');
     setDB(STORAGE_KEYS.USERS, filtered);
   },
 
@@ -185,13 +237,35 @@ export const StorageService = {
   },
   addCards: (agentId: string, categoryId: string, codes: string[]) => {
     const allCards = getDB<Card[]>(STORAGE_KEYS.KROOT, []);
+    const categories = getDB<Category[]>(STORAGE_KEYS.CATEGORIES, []);
+    const agentCards = allCards.filter(c => c.agentId === agentId);
+    
+    // Decrypt existing cards for comparison
+    const existingCodesMap = new Map<string, string>(); // code -> categoryName
+    agentCards.forEach(c => {
+      const decrypted = Security.decrypt(c.cardNumber);
+      const cat = categories.find(cat => cat.id === c.categoryId);
+      existingCodesMap.set(decrypted, cat?.name || 'فئة غير معروفة');
+    });
+
     const newKroot: Card[] = [];
-    const results = { added: 0, duplicates: [] as string[] };
-    const batchSet = new Set<string>(); // Optimize local check
+    const results = { added: 0, duplicates: [] as { code: string, category: string }[] };
+    const batchSet = new Set<string>(); 
 
     codes.forEach(code => {
       const cleanCode = code.trim();
-      if (!cleanCode || batchSet.has(cleanCode)) return; 
+      if (!cleanCode) return;
+      
+      if (existingCodesMap.has(cleanCode)) {
+        results.duplicates.push({ code: cleanCode, category: existingCodesMap.get(cleanCode)! });
+        return;
+      }
+      
+      if (batchSet.has(cleanCode)) {
+        results.duplicates.push({ code: cleanCode, category: 'نفس الدفعة' });
+        return;
+      }
+
       batchSet.add(cleanCode);
       newKroot.push({
         id: `K-${Date.now()}-${Math.random().toString(36).substr(2, 5)}`,
@@ -199,6 +273,7 @@ export const StorageService = {
       } as any); 
       results.added++;
     });
+
     if (newKroot.length > 0) setDB(STORAGE_KEYS.KROOT, [...allCards, ...newKroot]);
     return results;
   },
@@ -298,6 +373,25 @@ export const StorageService = {
       setDB(STORAGE_KEYS.USERS, users.map(u => u.id === agentId ? { ...u, bankAccounts: ((u as Agent).bankAccounts || []).filter(b => b.id !== bankId) } : u));
   },
 
+  // === Agent Contacts Management ===
+  addAgentContact: (agentId: string, contact: any) => {
+      const users = getDB<User[]>(STORAGE_KEYS.USERS, []);
+      const newContact = { ...contact, id: `AC-${Date.now()}`, isActive: true };
+      setDB(STORAGE_KEYS.USERS, users.map(u => u.id === agentId ? { ...u, contacts: [...((u as Agent).contacts || []), newContact] } : u));
+  },
+  updateAgentContact: (agentId: string, contactId: string, updates: any) => {
+      const users = getDB<User[]>(STORAGE_KEYS.USERS, []);
+      setDB(STORAGE_KEYS.USERS, users.map(u => u.id === agentId ? { ...u, contacts: ((u as Agent).contacts || []).map(c => c.id === contactId ? { ...c, ...updates } : c) } : u));
+  },
+  deleteAgentContact: (agentId: string, contactId: string) => {
+      const users = getDB<User[]>(STORAGE_KEYS.USERS, []);
+      setDB(STORAGE_KEYS.USERS, users.map(u => u.id === agentId ? { ...u, contacts: ((u as Agent).contacts || []).filter(c => c.id !== contactId) } : u));
+  },
+  toggleAgentContact: (agentId: string, contactId: string) => {
+      const users = getDB<User[]>(STORAGE_KEYS.USERS, []);
+      setDB(STORAGE_KEYS.USERS, users.map(u => u.id === agentId ? { ...u, contacts: ((u as Agent).contacts || []).map(c => c.id === contactId ? { ...c, isActive: !c.isActive } : c) } : u));
+  },
+
   createOrder: async (userId: string, categoryId: string, qty: number): Promise<Order[] | string> => {
     const users = getDB<User[]>(STORAGE_KEYS.USERS, []);
     const user = users.find(u => u.id === userId);
@@ -311,7 +405,7 @@ export const StorageService = {
     const selectedCards = availableCards.slice(0, qty);
     const newOrders: Order[] = selectedCards.map(card => ({
       id: `ORD-${Date.now()}-${Math.random().toString(36).substr(2, 5)}`,
-      userId, userEmail: user.email, userName: user.fullName, 
+      userId, userPhone: user.phone, userName: user.fullName, 
       agentId: category.agentId, categoryId, cardId: card.id,
       networkName: agent.networkName, categoryName: category.name,
       pointsUsed: category.pointsPrice, status: Status.COMPLETED,
@@ -341,8 +435,7 @@ export const StorageService = {
       isActive: true, 
       status: 'ACTIVE', 
       createdAt: new Date().toISOString(), 
-      password: Security.hashPassword(data.password),
-      email: data.email || '' // Maintain email for compatibility if provided
+      password: Security.hashPassword(data.password)
     };
     setDB(STORAGE_KEYS.USERS, [...users, newUser]);
   },
@@ -355,73 +448,8 @@ export const StorageService = {
       { id: 'archive', label: 'الأرشيف', icon: '📂', enabled: true },
       { id: 'sales', label: 'المبيعات', icon: '💰', enabled: true },
       { id: 'settlements', label: 'التسويات', icon: '🏦', enabled: true },
+      { id: 'contacts', label: 'وسائل التواصل', icon: '📱', enabled: true },
       { id: 'settings', label: 'الإعدادات', icon: '⚙️', enabled: true },
-    ]
-  }),
-
-  getDefaultUserTabs: (): UserTabsConfig => ({
-    tabs: [
-      { id: 'dashboard', label: 'الرئيسية', icon: '🏠', contentType: 'dashboard', content: {}, enabled: true, order: 0 },
-      { id: 'shopping', label: 'تسوق الآن', icon: '🛒', contentType: 'builtin', content: { type: 'shopping' }, enabled: true, order: 1 },
-      { id: 'user_wallet', label: 'محفظتي', icon: '💳', contentType: 'user_wallet', content: {}, enabled: true, order: 2 },
-      { id: 'purchased_cards', label: 'كروتي', icon: '🎫', contentType: 'purchased_cards', content: {}, enabled: true, order: 3 },
-      { id: 'settings', label: 'إعدادات الأمان', icon: '🔐', contentType: 'builtin', content: { type: 'settings' }, enabled: true, order: 4 },
-    ]
-  }),
-
-  getDefaultDashboardLayout: (): UserDashboardLayout => ({
-    sections: [
-      {
-        id: 'main',
-        label: 'الرئيسية',
-        icon: '🏠',
-        order: 0,
-        enabled: true,
-        subTabs: [
-          { id: 'home', label: 'لوحة المعلومات', icon: '📊', contentType: 'dashboard', content: {}, enabled: true, order: 0 }
-        ]
-      },
-      {
-        id: 'shop',
-        label: 'المتجر',
-        icon: '🛒',
-        order: 1,
-        enabled: true,
-        subTabs: [
-          { id: 'buy', label: 'تسوق الآن', icon: '🛍️', contentType: 'builtin', content: { type: 'shopping' }, enabled: true, order: 0 }
-        ]
-      },
-      {
-        id: 'wallet_section',
-        label: 'المحفظة',
-        icon: '💳',
-        order: 2,
-        enabled: true,
-        subTabs: [
-          { id: 'wallet', label: 'محفظتي', icon: '💰', contentType: 'user_wallet', content: {}, enabled: true, order: 0 },
-          { id: 'history', label: 'سجل العمليات', icon: '📜', contentType: 'transactions_list', content: {}, enabled: true, order: 1 }
-        ]
-      },
-      {
-        id: 'cards_section',
-        label: 'كروتي',
-        icon: '🎫',
-        order: 3,
-        enabled: true,
-        subTabs: [
-          { id: 'my_cards', label: 'الكروت المشتراة', icon: '📇', contentType: 'purchased_cards', content: {}, enabled: true, order: 0 }
-        ]
-      },
-      {
-        id: 'account',
-        label: 'الحساب',
-        icon: '👤',
-        order: 4,
-        enabled: true,
-        subTabs: [
-          { id: 'security', label: 'إعدادات الأمان', icon: '🔐', contentType: 'builtin', content: { type: 'settings' }, enabled: true, order: 0 }
-        ]
-      }
     ]
   }),
 
@@ -430,30 +458,39 @@ export const StorageService = {
       maintenance: false,
       announcement: '',
       agentTabs: StorageService.getDefaultAgentTabs(),
-      userTabs: StorageService.getDefaultUserTabs(),
-      dashboardLayout: StorageService.getDefaultDashboardLayout(),
       agentVisibleTabs: {
         stats: true,
         categories: true,
         archive: true,
         sales: true,
         settlements: true,
+        contacts: true,
         settings: true,
       },
       support: {
-        whatsapp: '967700000000',
-        email: 'support@quantum.com'
+        whatsapp: '967700000000'
       }
     };
     const saved = localStorage.getItem(STORAGE_KEYS.SYSTEM_SETTINGS);
     if (saved) {
       const parsed = JSON.parse(saved);
+      
+      // Ensure all default tabs exist in the saved settings
+      const mergedTabs = [...defaultSettings.agentTabs.tabs];
+      if (parsed.agentTabs && parsed.agentTabs.tabs) {
+        parsed.agentTabs.tabs.forEach((savedTab: any) => {
+          const index = mergedTabs.findIndex(t => t.id === savedTab.id);
+          if (index !== -1) {
+            mergedTabs[index] = { ...mergedTabs[index], ...savedTab };
+          }
+        });
+      }
+
       return {
         ...defaultSettings,
         ...parsed,
-        agentTabs: { ...defaultSettings.agentTabs, ...parsed.agentTabs },
-        userTabs: { ...defaultSettings.userTabs, ...parsed.userTabs },
-        dashboardLayout: parsed.dashboardLayout || defaultSettings.dashboardLayout,
+        agentTabs: { tabs: mergedTabs },
+        agentVisibleTabs: { ...defaultSettings.agentVisibleTabs, ...parsed.agentVisibleTabs }
       };
     }
     return defaultSettings;
@@ -467,131 +504,6 @@ export const StorageService = {
     const settings = StorageService.getSystemSettings();
     settings.agentTabs.tabs = newTabs;
     StorageService.saveSystemSettings(settings);
-  },
-
-  updateUserTabs: (newTabs: DynamicTab[]): void => {
-    const settings = StorageService.getSystemSettings();
-    settings.userTabs.tabs = newTabs;
-    StorageService.saveSystemSettings(settings);
-  },
-
-  addUserTab: (tab: Omit<DynamicTab, 'id'>): void => {
-    const settings = StorageService.getSystemSettings();
-    const newTab: DynamicTab = {
-      ...tab,
-      id: `tab_${Date.now()}`,
-      order: settings.userTabs.tabs.length
-    };
-    settings.userTabs.tabs.push(newTab);
-    StorageService.saveSystemSettings(settings);
-  },
-
-  updateUserTab: (id: string, updates: Partial<DynamicTab>): void => {
-    const settings = StorageService.getSystemSettings();
-    settings.userTabs.tabs = settings.userTabs.tabs.map(t => t.id === id ? { ...t, ...updates } : t);
-    StorageService.saveSystemSettings(settings);
-  },
-
-  deleteUserTab: (id: string): void => {
-    const settings = StorageService.getSystemSettings();
-    settings.userTabs.tabs = settings.userTabs.tabs.filter(t => t.id !== id);
-    StorageService.saveSystemSettings(settings);
-  },
-
-  reorderUserTabs: (tabs: DynamicTab[]): void => {
-    const settings = StorageService.getSystemSettings();
-    settings.userTabs.tabs = tabs.map((t, i) => ({ ...t, order: i }));
-    StorageService.saveSystemSettings(settings);
-  },
-
-  updateDashboardLayout: (layout: UserDashboardLayout): void => {
-    const settings = StorageService.getSystemSettings();
-    settings.dashboardLayout = layout;
-    StorageService.saveSystemSettings(settings);
-  },
-
-  // === User Dashboard Layout (Phase 1) ===
-  getDefaultUserLayout: (): UserDashboardLayout => {
-    return {
-      sections: [
-        {
-          id: 'overview',
-          label: 'نظرة عامة',
-          icon: '📊',
-          order: 0,
-          enabled: true,
-          subTabs: [
-            {
-              id: 'summary',
-              label: 'الملخص',
-              contentType: 'user_summary',
-              content: {},
-              enabled: true,
-              order: 0,
-            },
-            {
-              id: 'activities',
-              label: 'النشاطات الأخيرة',
-              contentType: 'recent_activities',
-              content: {},
-              enabled: true,
-              order: 1,
-            }
-          ]
-        },
-        {
-          id: 'shopping',
-          label: 'تسوق الآن',
-          icon: '🛒',
-          order: 1,
-          enabled: true,
-          subTabs: [
-            {
-              id: 'categories',
-              label: 'الفئات',
-              contentType: 'builtin',
-              content: { type: 'shopping' },
-              enabled: true,
-              order: 0,
-            }
-          ]
-        },
-        {
-          id: 'settings',
-          label: 'إعدادات الأمان',
-          icon: '🔐',
-          order: 2,
-          enabled: true,
-          subTabs: [
-            {
-              id: 'password',
-              label: 'تغيير كلمة المرور',
-              contentType: 'builtin',
-              content: { type: 'password' },
-              enabled: true,
-              order: 0,
-            }
-          ]
-        }
-      ]
-    };
-  },
-
-  saveUserLayout: (layout: UserDashboardLayout): void => {
-    localStorage.setItem('qw_user_layout', JSON.stringify(layout));
-  },
-
-  getUserLayout: (): UserDashboardLayout => {
-    const defaultLayout = StorageService.getDefaultUserLayout();
-    const saved = localStorage.getItem('qw_user_layout');
-    if (saved) {
-      try {
-        return { ...defaultLayout, ...JSON.parse(saved) };
-      } catch (e) {
-        return defaultLayout;
-      }
-    }
-    return defaultLayout;
   },
 
   // === Notifications ===
@@ -643,6 +555,92 @@ export const StorageService = {
     return StorageService.getPointsRequests().filter(r => r.userId === userId);
   },
 
+  getTransactions: (userId: string): Transaction[] => {
+    const orders = StorageService.getOrders(userId, UserRole.USER);
+    const deposits = StorageService.getUserDeposits(userId);
+    const loans = StorageService.getLoans(userId);
+    const prizes = StorageService.getLuckyWheelHistory(userId);
+    
+    // For transfers, we'd need a separate storage or log. 
+    // For now, let's assume we can find them in system logs or just mock some if needed.
+    // However, the user wants "بيانات حقيقية (محاكاة) من localStorage".
+    // I should probably have a dedicated transfers storage.
+    const transfers = getDB<any[]>('qw_transfers_v1', []);
+    const userTransfers = transfers.filter(t => t.fromUserId === userId || t.toUserId === userId);
+
+    const txs: Transaction[] = [
+      ...orders.map(o => ({
+        id: o.id,
+        date: o.createdAt,
+        type: 'purchase' as const,
+        details: `شراء كرت: ${o.categoryName} (${o.networkName})`,
+        amount: -o.pointsUsed,
+        status: o.status
+      })),
+      ...deposits.map(d => ({
+        id: d.id,
+        date: d.createdAt,
+        type: 'deposit' as const,
+        details: `شحن رصيد عبر ${d.paymentMethod}`,
+        amount: d.amount,
+        status: d.status
+      })),
+      ...loans.map(l => ({
+        id: l.id,
+        date: l.createdAt,
+        type: 'loan' as const,
+        details: `طلب سلفة`,
+        amount: l.amount,
+        status: l.status
+      })),
+      ...prizes.map(p => ({
+        id: p.id,
+        date: p.createdAt,
+        type: 'prize' as const,
+        details: `جائزة عجلة الحظ: ${p.prize}`,
+        amount: p.value,
+        status: Status.COMPLETED
+      })),
+      ...userTransfers.map(t => ({
+        id: t.id,
+        date: t.date,
+        type: (t.fromUserId === userId ? 'transfer_out' : 'transfer_in') as any,
+        details: t.fromUserId === userId ? `تحويل إلى ${t.toPhone}` : `استلام من ${t.fromName}`,
+        amount: t.fromUserId === userId ? -t.amount : t.amount,
+        status: Status.COMPLETED
+      }))
+    ];
+
+    return txs.sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime());
+  },
+
+  getReports: (userId: string) => {
+    // Combine orders and deposits into a unified report format
+    const orders = StorageService.getOrders().filter(o => o.userId === userId);
+    const deposits = StorageService.getUserDeposits(userId);
+    
+    const reports = [
+      ...orders.map(o => ({
+        id: o.id,
+        date: o.createdAt,
+        type: 'شراء كرت',
+        details: `${o.networkName} - ${o.categoryName}`,
+        amount: -o.pointsUsed,
+        status: o.status
+      })),
+      ...deposits.map(d => ({
+        id: d.id,
+        date: d.createdAt,
+        type: 'شحن رصيد',
+        details: `عبر ${d.paymentMethod}`,
+        amount: d.amount,
+        status: d.status
+      }))
+    ];
+    
+    return reports.sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime());
+  },
+
   logout: () => {
     localStorage.removeItem('qw_current_user');
   },
@@ -651,6 +649,131 @@ export const StorageService = {
     const settings = StorageService.getSystemSettings();
     settings.agentVisibleTabs = { ...settings.agentVisibleTabs, ...tabs };
     StorageService.saveSystemSettings(settings);
+  },
+
+  // === Loans ===
+  getLoans: (userId?: string) => {
+    const loans = getDB<Loan[]>(STORAGE_KEYS.LOANS, []);
+    return userId ? loans.filter(l => l.userId === userId) : loans;
+  },
+  requestLoan: (userId: string, amount: number) => {
+    const loans = getDB<Loan[]>(STORAGE_KEYS.LOANS, []);
+    const users = StorageService.getUsers();
+    const user = users.find(u => u.id === userId);
+    if (!user) return "المستخدم غير موجود";
+    
+    const newLoan: Loan = {
+      id: `LOAN-${Date.now()}`,
+      userId,
+      amount,
+      status: Status.PENDING,
+      createdAt: new Date().toISOString(),
+      dueDate: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString() // 7 days
+    };
+    setDB(STORAGE_KEYS.LOANS, [...loans, newLoan]);
+    return true;
+  },
+
+  // === Lucky Wheel ===
+  getLuckyWheelHistory: (userId?: string) => {
+    const history = getDB<LuckyWheelPrize[]>(STORAGE_KEYS.LUCKY_WHEEL, []);
+    return userId ? history.filter(h => h.userId === userId) : history;
+  },
+  spinLuckyWheel: (userId: string, prize: string, value: number) => {
+    const history = getDB<LuckyWheelPrize[]>(STORAGE_KEYS.LUCKY_WHEEL, []);
+    const users = StorageService.getUsers();
+    const user = users.find(u => u.id === userId);
+    if (!user) return "المستخدم غير موجود";
+
+    const newPrize: LuckyWheelPrize = {
+      id: `PRIZE-${Date.now()}`,
+      userId,
+      prize,
+      value,
+      createdAt: new Date().toISOString()
+    };
+    
+    setDB(STORAGE_KEYS.LUCKY_WHEEL, [newPrize, ...history]);
+    StorageService.updateUser(userId, { 
+      pointsBalance: user.pointsBalance + value,
+      luckyWheelLastSpin: new Date().toISOString()
+    });
+    return newPrize;
+  },
+
+  // === Flash Offers ===
+  getFlashOffers: () => getDB<FlashOffer[]>(STORAGE_KEYS.FLASH_OFFERS, []),
+  addFlashOffer: (offer: Omit<FlashOffer, 'id'>) => {
+    const offers = getDB<FlashOffer[]>(STORAGE_KEYS.FLASH_OFFERS, []);
+    const newOffer = { ...offer, id: `FLASH-${Date.now()}` };
+    setDB(STORAGE_KEYS.FLASH_OFFERS, [...offers, newOffer]);
+  },
+
+  // === Transfer Points ===
+  transferPoints: (fromUserId: string, toPhone: string, amount: number) => {
+    const users = StorageService.getUsers();
+    const fromUser = users.find(u => u.id === fromUserId);
+    const toUser = users.find(u => u.phone === toPhone);
+
+    if (!fromUser) return "المستخدم المرسل غير موجود";
+    if (!toUser) return "رقم هاتف المستلم غير موجود";
+    if (fromUser.id === toUser.id) return "لا يمكنك التحويل لنفسك";
+    if (fromUser.pointsBalance < amount) return "رصيدك غير كافٍ";
+
+    StorageService.updateUser(fromUser.id, { pointsBalance: fromUser.pointsBalance - amount });
+    StorageService.updateUser(toUser.id, { pointsBalance: toUser.pointsBalance + amount });
+
+    // Record transfer
+    const transfers = getDB<any[]>('qw_transfers_v1', []);
+    transfers.push({
+      id: `TR-${Date.now()}`,
+      fromUserId,
+      fromName: fromUser.fullName,
+      toUserId: toUser.id,
+      toPhone,
+      amount,
+      date: new Date().toISOString()
+    });
+    setDB('qw_transfers_v1', transfers);
+
+    // Add to notifications for recipient
+    StorageService.addNotification(toUser.id, 'استلام رصيد', `لقد استلمت ${amount} نقطة من ${fromUser.fullName}`, 'success');
+    
+    return true;
+  },
+
+  // === Support Tickets ===
+  getSupportTickets: (userId?: string, role?: UserRole) => {
+    const tickets = getDB<SupportTicket[]>(STORAGE_KEYS.SUPPORT_TICKETS, []);
+    if (role === UserRole.ADMIN || role === UserRole.MANAGER) return tickets;
+    if (role === UserRole.AGENT) return tickets.filter(t => t.recipientId === userId);
+    return tickets.filter(t => t.userId === userId);
+  },
+
+  createSupportTicket: (ticket: Omit<SupportTicket, 'id' | 'status' | 'createdAt'>) => {
+    const tickets = getDB<SupportTicket[]>(STORAGE_KEYS.SUPPORT_TICKETS, []);
+    const newTicket: SupportTicket = {
+      ...ticket,
+      id: `TICKET-${Date.now()}`,
+      status: TicketStatus.OPEN,
+      createdAt: new Date().toISOString(),
+      replies: []
+    };
+    setDB(STORAGE_KEYS.SUPPORT_TICKETS, [newTicket, ...tickets]);
+    return newTicket;
+  },
+
+  updateTicketStatus: (ticketId: string, status: TicketStatus) => {
+    const tickets = getDB<SupportTicket[]>(STORAGE_KEYS.SUPPORT_TICKETS, []);
+    setDB(STORAGE_KEYS.SUPPORT_TICKETS, tickets.map(t => t.id === ticketId ? { ...t, status } : t));
+  },
+
+  addTicketReply: (ticketId: string, reply: { senderId: string, senderName: string, message: string }) => {
+    const tickets = getDB<SupportTicket[]>(STORAGE_KEYS.SUPPORT_TICKETS, []);
+    setDB(STORAGE_KEYS.SUPPORT_TICKETS, tickets.map(t => t.id === ticketId ? { 
+      ...t, 
+      replies: [...(t.replies || []), { ...reply, createdAt: new Date().toISOString() }] 
+    } : t));
   }
 };
 StorageService.init();

@@ -17,6 +17,7 @@ const App: React.FC = () => {
   const [currentHash, setCurrentHash] = useState(window.location.hash);
 
   useEffect(() => {
+    StorageService.init();
     const handleHashChange = () => setCurrentHash(window.location.hash);
     window.addEventListener('hashchange', handleHashChange);
     

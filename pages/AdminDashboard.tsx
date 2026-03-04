@@ -1,8 +1,13 @@
 
 import React, { useState, useEffect, useMemo, useTransition, useRef } from 'react';
-import { User, UserRole, Status, PointRequest, SettlementReport, BankAccount, Card, CardStatus, Order, Agent, MikroTikConfig, SystemSettings, AgentVisibleTabs, TabConfig, DynamicTab, ContentType, UserDashboardLayout } from '../types';
+import { User, UserRole, Status, PointRequest, SettlementReport, BankAccount, Card, CardStatus, Order, Agent, MikroTikConfig, SystemSettings, AgentVisibleTabs, TabConfig } from '../types';
+import { cn } from '../lib/utils';
 import { StorageService, SystemLog } from '../services/storage';
+import { googleSheetsService } from '../src/services/GoogleSheetsService';
+import * as Icons from 'lucide-react';
 import { useNotification } from '../components/Layout';
+import { jsPDF } from 'jspdf';
+import 'jspdf-autotable';
 // @ts-ignore
 import html2pdf from 'html2pdf.js';
 
@@ -114,8 +119,29 @@ const AdminDashboard: React.FC<{ currentUser: User }> = ({ currentUser }) => {
   
   // --- UI State ---
   const [isSidebarOpen, setIsSidebarOpen] = useState(true);
-  const [activeSection, setActiveSection] = useState<'home' | 'requests' | 'agents' | 'managers' | 'finance' | 'banks' | 'reports' | 'monitoring' | 'activity_log' | 'settings'>('home');
-  const [reportTab, setReportTab] = useState<'sales' | 'shipping' | 'users' | 'agents_perf'>('sales');
+  const [activeSection, setActiveSection] = useState<'home' | 'requests' | 'agents' | 'managers' | 'finance' | 'banks' | 'reports' | 'monitoring' | 'settings'>('home');
+  const [googleStats, setGoogleStats] = useState<Record<string, any> | null>(null);
+  const [isSyncing, setIsSyncing] = useState(false);
+  const [reportTab, setReportTab] = useState<'all' | 'sales' | 'shipping' | 'users' | 'agents_perf'>('sales');
+  const [agentPerfSearch, setAgentPerfSearch] = useState('');
+  const [debouncedAgentPerfSearch, setDebouncedAgentPerfSearch] = useState('');
+
+  useEffect(() => {
+    const timer = setTimeout(() => {
+      setDebouncedAgentPerfSearch(agentPerfSearch);
+    }, 300);
+    return () => clearTimeout(timer);
+  }, [agentPerfSearch]);
+
+  const [globalSearch, setGlobalSearch] = useState('');
+  const [debouncedGlobalSearch, setDebouncedGlobalSearch] = useState('');
+  
+  useEffect(() => {
+    const timer = setTimeout(() => {
+      setDebouncedGlobalSearch(globalSearch);
+    }, 300);
+    return () => clearTimeout(timer);
+  }, [globalSearch]);
 
   // --- Data State ---
   const [users, setUsers] = useState<User[]>([]);
@@ -130,7 +156,6 @@ const AdminDashboard: React.FC<{ currentUser: User }> = ({ currentUser }) => {
     maintenance: false, 
     announcement: '',
     agentTabs: StorageService.getDefaultAgentTabs(),
-    userTabs: StorageService.getDefaultUserTabs(),
     agentVisibleTabs: {
       stats: true,
       categories: true,
@@ -152,9 +177,39 @@ const AdminDashboard: React.FC<{ currentUser: User }> = ({ currentUser }) => {
   const [logFilter, setLogFilter] = useState('ALL');
   const [isFilterOpen, setIsFilterOpen] = useState(false);
   const [logSearch, setLogSearch] = useState('');
+  const [debouncedLogSearch, setDebouncedLogSearch] = useState('');
+  
+  // Debounce search input to prevent UI freezing during typing
+  useEffect(() => {
+    const timer = setTimeout(() => {
+      setDebouncedLogSearch(logSearch);
+    }, 300);
+    return () => clearTimeout(timer);
+  }, [logSearch]);
 
   // Requests Filter
   const [requestFilter, setRequestFilter] = useState<'ALL' | 'DEPOSIT' | 'WITHDRAW'>('ALL');
+
+  // Monitoring Filters
+  const [monitoringSearch, setMonitoringSearch] = useState('');
+  const [debouncedMonitoringSearch, setDebouncedMonitoringSearch] = useState('');
+  const [monitoringStatusFilter, setMonitoringStatusFilter] = useState<'ALL' | 'ACTIVE' | 'BLOCKED' | 'INACTIVE'>('ALL');
+  const [monitoringRoleFilter, setMonitoringRoleFilter] = useState<'ALL' | 'USER' | 'AGENT' | 'MANAGER'>('ALL');
+  const [monitoringDateRange, setMonitoringDateRange] = useState({ start: '', end: '' });
+
+  useEffect(() => {
+    const timer = setTimeout(() => {
+      setDebouncedMonitoringSearch(monitoringSearch);
+    }, 300);
+    return () => clearTimeout(timer);
+  }, [monitoringSearch]);
+
+  // Activity Filters (Home Page)
+  const [activitySearch, setActivitySearch] = useState('');
+  const [activityTypeFilter, setActivityTypeFilter] = useState<'ALL' | 'PURCHASE' | 'DEPOSIT' | 'SETTLEMENT' | 'LOGIN'>('ALL');
+  const [activityTimeFilter, setActivityTimeFilter] = useState<'DAY' | 'WEEK' | 'MONTH' | 'CUSTOM'>('DAY');
+  const [activityCustomDate, setActivityCustomDate] = useState({ start: '', end: '' });
+  const [activitiesLimit, setActivitiesLimit] = useState(50);
 
   // Report Filters
   const [reportTimeFilter, setReportTimeFilter] = useState<'DAY' | 'WEEK' | 'MONTH' | 'YEAR' | 'CUSTOM'>('DAY');
@@ -162,11 +217,10 @@ const AdminDashboard: React.FC<{ currentUser: User }> = ({ currentUser }) => {
 
   // MikroTik Config State
   const [mikroTikConfig, setMikroTikConfig] = useState<MikroTikConfig>({ host: '', port: '8728', username: '', password: '', mode: 'MANUAL' });
-  const [userLayout, setUserLayout] = useState<UserDashboardLayout>(StorageService.getDefaultUserLayout());
 
   // --- Modals State ---
   const [showUserModal, setShowUserModal] = useState(false);
-  const [userForm, setUserForm] = useState({ id: '', fullName: '', email: '', phone: '', password: '', role: UserRole.AGENT, networkName: '', profitPercentage: 0, isActive: true });
+  const [userForm, setUserForm] = useState({ id: '', fullName: '', phone: '', email: '', password: '', role: UserRole.AGENT, networkName: '', profitPercentage: 0, isActive: true, pointsBalance: 0 });
   const [isEditMode, setIsEditMode] = useState(false);
   
   // System Bank Modal State
@@ -190,14 +244,6 @@ const AdminDashboard: React.FC<{ currentUser: User }> = ({ currentUser }) => {
   const [amountInput, setAmountInput] = useState('');
 
   const [viewModal, setViewModal] = useState<{ isOpen: boolean; title: string; data: any; type: string } | null>(null);
-  const [showTabEditor, setShowTabEditor] = useState<{ isOpen: boolean; tab?: DynamicTab } | null>(null);
-  const [tabForm, setTabForm] = useState<Partial<DynamicTab>>({
-    label: '',
-    icon: '',
-    contentType: 'text',
-    content: '',
-    enabled: true
-  });
 
   // --- Initialization ---
   const refreshData = () => {
@@ -215,7 +261,6 @@ const AdminDashboard: React.FC<{ currentUser: User }> = ({ currentUser }) => {
     setStatOffsets(StorageService.getStatOffsets());
     
     setSystemSettings(StorageService.getSystemSettings());
-    setUserLayout(StorageService.getUserLayout());
 
     const savedMikroTik = localStorage.getItem('qw_mikrotik_config');
     if(savedMikroTik) setMikroTikConfig(JSON.parse(savedMikroTik));
@@ -224,11 +269,20 @@ const AdminDashboard: React.FC<{ currentUser: User }> = ({ currentUser }) => {
   useEffect(() => {
     refreshData();
     if (window.innerWidth < 1024) setIsSidebarOpen(false);
+    
+    // Fetch Google Sheets stats
+    const fetchGoogleStats = async () => {
+      const stats = await googleSheetsService.getStats();
+      if (Object.keys(stats).length > 0) {
+        setGoogleStats(stats);
+      }
+    };
+    fetchGoogleStats();
   }, []);
 
   const handleNavigate = (section: typeof activeSection) => {
       if (window.innerWidth < 1024) setIsSidebarOpen(false);
-      startTransition(() => { setActiveSection(section); });
+      setActiveSection(section);
   };
 
   const handleAvatarUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -294,53 +348,9 @@ const AdminDashboard: React.FC<{ currentUser: User }> = ({ currentUser }) => {
       setAdminPassForm({ new: '', confirm: '' });
   };
 
-  const handleSaveTab = () => {
-    if (!tabForm.label || !tabForm.icon) {
-      showNotification('يرجى ملء الاسم والأيقونة', 'error');
-      return;
-    }
-
-    if (showTabEditor?.tab) {
-      StorageService.updateUserTab(showTabEditor.tab.id, tabForm);
-      showNotification('تم تحديث التبويب بنجاح ✅', 'success');
-    } else {
-      StorageService.addUserTab(tabForm as any);
-      showNotification('تم إضافة التبويب بنجاح ✨', 'success');
-    }
-    setShowTabEditor(null);
-    refreshData();
-  };
-
-  const handleDeleteTab = (id: string) => {
-    setConfirmModal({
-      isOpen: true,
-      title: 'حذف تبويب',
-      message: 'هل أنت متأكد من حذف هذا التبويب؟ لا يمكن التراجع عن هذه العملية.',
-      type: 'danger',
-      action: () => {
-        StorageService.deleteUserTab(id);
-        refreshData();
-        showNotification('تم حذف التبويب بنجاح 🗑️', 'info');
-        setConfirmModal(prev => ({ ...prev, isOpen: false }));
-      }
-    });
-  };
-
-  const handleMoveTab = (id: string, direction: 'up' | 'down') => {
-    const tabs = [...systemSettings.userTabs.tabs].sort((a, b) => a.order - b.order);
-    const idx = tabs.findIndex(t => t.id === id);
-    if (direction === 'up' && idx > 0) {
-      [tabs[idx], tabs[idx - 1]] = [tabs[idx - 1], tabs[idx]];
-    } else if (direction === 'down' && idx < tabs.length - 1) {
-      [tabs[idx], tabs[idx + 1]] = [tabs[idx + 1], tabs[idx]];
-    }
-    StorageService.reorderUserTabs(tabs);
-    refreshData();
-  };
-
   const handleSaveUser = () => {
-        if (!userForm.fullName || (!userForm.email && !userForm.phone) || (!userForm.id && !userForm.password)) {
-            showNotification('يرجى ملء كافة الحقول الأساسية (الاسم ورقم الهاتف أو البريد)', 'error');
+        if (!userForm.fullName || !userForm.phone || (!userForm.id && !userForm.password)) {
+            showNotification('يرجى ملء كافة الحقول الأساسية (الاسم ورقم الهاتف)', 'error');
             return;
         }
         
@@ -351,7 +361,10 @@ const AdminDashboard: React.FC<{ currentUser: User }> = ({ currentUser }) => {
 
         if (userForm.id) {
              // Update existing
-             StorageService.updateUser(userForm.id, userForm);
+             const updateData: any = { ...userForm };
+             if (!userForm.password) delete updateData.password;
+             
+             StorageService.updateUser(userForm.id, updateData);
              StorageService.logAction('تعديل بيانات مستخدم', `تحديث بيانات: ${userForm.fullName}`, currentUser.fullName, 'EDIT');
              showNotification('تم تحديث بيانات المستخدم ✅', 'success');
         } else {
@@ -372,13 +385,14 @@ const AdminDashboard: React.FC<{ currentUser: User }> = ({ currentUser }) => {
       setUserForm({
           id: user.id,
           fullName: user.fullName,
-          email: user.email || '',
           phone: user.phone || '',
+          email: user.email || '',
           password: '', // Password placeholder handled in modal
           role: user.role,
           networkName: user.role === UserRole.AGENT ? (user as Agent).networkName : '',
           profitPercentage: user.role === UserRole.AGENT ? (user as Agent).profitPercentage : 0,
-          isActive: user.isActive
+          isActive: user.isActive,
+          pointsBalance: user.pointsBalance || 0
       });
       setIsEditMode(true);
       setShowUserModal(true);
@@ -481,8 +495,7 @@ const AdminDashboard: React.FC<{ currentUser: User }> = ({ currentUser }) => {
             return (
                 <div className="grid grid-cols-2 gap-3 animate-in fade-in zoom-in duration-300">
                     <DetailBox label="الاسم الكامل" value={u.fullName} icon="👤" color="bg-indigo-50 border-indigo-200 text-indigo-700" fullWidth />
-                    <DetailBox label="رقم الهاتف" value={u.phone || 'غير متوفر'} icon="📱" color="bg-emerald-50 border-emerald-200 text-emerald-700" />
-                    <DetailBox label="البريد الإلكتروني" value={u.email || 'غير متوفر'} icon="📧" color="bg-slate-50 border-slate-200 text-slate-700" />
+                    <DetailBox label="رقم الهاتف" value={u.phone || 'غير متوفر'} icon="📱" color="bg-emerald-50 border-emerald-200 text-emerald-700" fullWidth />
                     <DetailBox label="نوع الحساب" value={u.role} icon="🛡️" color="bg-violet-50 border-violet-200 text-violet-700" />
                     <DetailBox label="الرصيد الحالي" value={`${u.pointsBalance} ن`} icon="💎" color="bg-cyan-50 border-cyan-200 text-cyan-700" />
                     <DetailBox label="حالة الحساب" value={u.isActive ? 'نشط' : 'موقف'} icon="⚡" color={u.isActive ? 'bg-emerald-50 border-emerald-200 text-emerald-700' : 'bg-rose-50 border-rose-200 text-rose-700'} />
@@ -546,43 +559,107 @@ const AdminDashboard: React.FC<{ currentUser: User }> = ({ currentUser }) => {
             const u = data as User;
             const userOrders = orders.filter(o => o.userId === u.id);
             const userLogins = systemLogs.filter(l => l.performedBy === u.fullName && l.action === 'تسجيل دخول');
+            const userDeposits = pointRequests.filter(r => r.userId === u.id);
+            
+            const totalSpent = userOrders.reduce((acc, o) => acc + o.pointsUsed, 0);
+            const totalDeposited = userDeposits.filter(r => r.status === Status.COMPLETED).reduce((acc, r) => acc + r.amount, 0);
+
+            const handleExportUserLogs = (format: 'PDF' | 'CSV') => {
+                const headers = ['التاريخ', 'النوع', 'التفاصيل', 'القيمة', 'الحالة'];
+                const rows = [
+                    ...userOrders.map(o => [new Date(o.createdAt).toLocaleString('ar-YE'), 'شراء', `كرت ${o.categoryName}`, `${o.pointsUsed} ن`, 'مكتمل']),
+                    ...userDeposits.map(r => [new Date(r.createdAt).toLocaleString('ar-YE'), 'شحن', r.paymentMethod, `${r.amount} ن`, r.status]),
+                    ...userLogins.map(l => [new Date(l.timestamp).toLocaleString('ar-YE'), 'دخول', 'تسجيل دخول', '-', 'ناجح'])
+                ].sort((a, b) => new Date(b[0] as string).getTime() - new Date(a[0] as string).getTime());
+
+                if (format === 'CSV') {
+                    const csvContent = "data:text/csv;charset=utf-8," + headers.join(",") + "\n" + rows.map(e => e.join(",")).join("\n");
+                    const encodedUri = encodeURI(csvContent);
+                    const link = document.createElement("a");
+                    link.setAttribute("href", encodedUri);
+                    link.setAttribute("download", `user_logs_${u.fullName}.csv`);
+                    document.body.appendChild(link);
+                    link.click();
+                } else {
+                    const doc = new jsPDF();
+                    // Basic PDF generation without custom fonts for simplicity in this environment
+                    doc.text(`User Activity Log: ${u.fullName}`, 10, 10);
+                    (doc as any).autoTable({
+                        head: [headers],
+                        body: rows,
+                        startY: 20,
+                        styles: { halign: 'right' },
+                        headStyles: { fillColor: [79, 70, 229] }
+                    });
+                    doc.save(`user_logs_${u.fullName}.pdf`);
+                }
+            };
+
             return (
                 <div className="space-y-6 animate-in fade-in zoom-in duration-300">
-                    <div className="grid grid-cols-2 gap-3">
-                        <DetailBox label="إجمالي المشتريات" value={`${userOrders.length} كرت`} icon="🛒" color="bg-indigo-50 border-indigo-200 text-indigo-700" />
-                        <DetailBox label="إجمالي المدفوعات" value={`${userOrders.reduce((acc, o) => acc + o.pointsUsed, 0)} ن`} icon="💰" color="bg-emerald-50 border-emerald-200 text-emerald-700" />
-                    </div>
-
-                    <div className="space-y-3">
-                        <h4 className="text-[10px] font-black text-slate-400 uppercase tracking-widest border-b pb-1">سجل المشتريات التفصيلي</h4>
-                        <div className="max-h-48 overflow-y-auto space-y-2 pr-1 custom-scrollbar">
-                            {userOrders.map(o => (
-                                <div key={o.id} className="p-3 bg-slate-50 dark:bg-white/5 rounded-xl border border-slate-100 dark:border-white/10 flex justify-between items-center">
-                                    <div>
-                                        <p className="text-xs font-bold">{o.categoryName}</p>
-                                        <p className="text-[9px] text-slate-400">{o.networkName}</p>
-                                    </div>
-                                    <div className="text-right">
-                                        <p className="text-xs font-black text-indigo-600">{o.pointsUsed} ن</p>
-                                        <p className="text-[9px] text-slate-400" dir="ltr">{new Date(o.createdAt).toLocaleDateString('ar-YE')}</p>
-                                    </div>
-                                </div>
-                            ))}
-                            {userOrders.length === 0 && <p className="text-center text-[10px] text-slate-400 py-4">لا توجد مشتريات مسجلة</p>}
+                    <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+                        <div className="p-4 bg-indigo-50 dark:bg-indigo-900/20 rounded-2xl border border-indigo-100 dark:border-indigo-900/30">
+                            <p className="text-[10px] font-black text-indigo-600 uppercase">إجمالي المشتريات</p>
+                            <p className="text-xl font-black">{userOrders.length}</p>
+                        </div>
+                        <div className="p-4 bg-emerald-50 dark:bg-emerald-900/20 rounded-2xl border border-emerald-100 dark:border-emerald-900/30">
+                            <p className="text-[10px] font-black text-emerald-600 uppercase">إجمالي الإنفاق</p>
+                            <p className="text-xl font-black">{totalSpent} ن</p>
+                        </div>
+                        <div className="p-4 bg-blue-50 dark:bg-blue-900/20 rounded-2xl border border-blue-100 dark:border-blue-900/30">
+                            <p className="text-[10px] font-black text-blue-600 uppercase">إجمالي الشحن</p>
+                            <p className="text-xl font-black">{totalDeposited} ن</p>
+                        </div>
+                        <div className="p-4 bg-amber-50 dark:bg-amber-900/20 rounded-2xl border border-amber-100 dark:border-amber-900/30">
+                            <p className="text-[10px] font-black text-amber-600 uppercase">عدد الدخول</p>
+                            <p className="text-xl font-black">{userLogins.length}</p>
                         </div>
                     </div>
 
-                    <div className="space-y-3">
-                        <h4 className="text-[10px] font-black text-slate-400 uppercase tracking-widest border-b pb-1">سجل الدخول</h4>
-                        <div className="max-h-48 overflow-y-auto space-y-2 pr-1 custom-scrollbar">
-                            {userLogins.map(l => (
-                                <div key={l.id} className="p-3 bg-indigo-50/30 dark:bg-indigo-900/10 rounded-xl flex justify-between items-center">
-                                    <span className="text-[10px] font-bold">تسجيل دخول ناجح</span>
-                                    <span className="text-[10px] font-mono opacity-60" dir="ltr">{new Date(l.timestamp).toLocaleString('ar-YE')}</span>
-                                </div>
-                            ))}
-                            {userLogins.length === 0 && <p className="text-center text-[10px] text-slate-400 py-4">لا توجد سجلات دخول</p>}
+                    <div className="flex justify-between items-center border-b dark:border-white/10 pb-2">
+                        <h4 className="text-xs font-black text-slate-800 dark:text-slate-200">سجل النشاطات التفصيلي</h4>
+                        <div className="flex gap-2">
+                            <button onClick={() => handleExportUserLogs('CSV')} className="p-1.5 bg-slate-100 dark:bg-white/5 text-slate-600 dark:text-slate-400 rounded-lg hover:bg-slate-200 transition-all" title="تصدير CSV">
+                                <Icons.FileText size={14} />
+                            </button>
+                            <button onClick={() => handleExportUserLogs('PDF')} className="p-1.5 bg-rose-50 dark:bg-rose-900/20 text-rose-600 dark:text-rose-400 rounded-lg hover:bg-rose-100 transition-all" title="تصدير PDF">
+                                <Icons.FileDown size={14} />
+                            </button>
                         </div>
+                    </div>
+
+                    <div className="max-h-[400px] overflow-y-auto overflow-x-auto rounded-xl border border-slate-100 dark:border-white/10 custom-scrollbar no-scrollbar">
+                        <table className="w-full text-right text-[10px] border-collapse">
+                            <thead className="bg-slate-50 dark:bg-white/5 sticky top-0 z-10">
+                                <tr>
+                                    <th className="p-3">التاريخ</th>
+                                    <th className="p-3">النوع</th>
+                                    <th className="p-3">التفاصيل</th>
+                                    <th className="p-3">القيمة</th>
+                                    <th className="p-3">الحالة</th>
+                                </tr>
+                            </thead>
+                            <tbody className="divide-y divide-slate-50 dark:divide-white/5">
+                                {[
+                                    ...userOrders.map(o => ({ id: o.id, date: o.createdAt, type: 'شراء', details: `كرت ${o.categoryName}`, val: `${o.pointsUsed} ن`, status: 'مكتمل', color: 'bg-cyan-100 text-cyan-700' })),
+                                    ...userDeposits.map(r => ({ id: r.id, date: r.createdAt, type: 'شحن', details: r.paymentMethod, val: `${r.amount} ن`, status: r.status, color: r.status === Status.COMPLETED ? 'bg-emerald-100 text-emerald-700' : 'bg-amber-100 text-amber-700' })),
+                                    ...userLogins.map(l => ({ id: l.id, date: l.timestamp, type: 'دخول', details: 'تسجيل دخول', val: '-', status: 'ناجح', color: 'bg-indigo-100 text-indigo-700' }))
+                                ].sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime()).map((item, idx) => (
+                                    <tr key={idx} className="hover:bg-slate-50 dark:hover:bg-white/5">
+                                        <td className="p-3 font-mono opacity-60">{new Date(item.date).toLocaleString('ar-YE')}</td>
+                                        <td className="p-3"><span className={`px-2 py-0.5 rounded-full text-[8px] font-black ${item.color}`}>{item.type}</span></td>
+                                        <td className="p-3 font-bold">{item.details}</td>
+                                        <td className="p-3 font-black text-indigo-600">{item.val}</td>
+                                        <td className="p-3"><span className="opacity-60">{item.status}</span></td>
+                                    </tr>
+                                ))}
+                                {userOrders.length === 0 && userDeposits.length === 0 && userLogins.length === 0 && (
+                                    <tr>
+                                        <td colSpan={5} className="p-8 text-center text-slate-400 italic">لا توجد نشاطات مسجلة</td>
+                                    </tr>
+                                )}
+                            </tbody>
+                        </table>
                     </div>
                 </div>
             );
@@ -626,8 +703,19 @@ const AdminDashboard: React.FC<{ currentUser: User }> = ({ currentUser }) => {
       
       const totalCats = categories.length;
       
-      const availableCards = allCards.filter(c => c.status === CardStatus.AVAILABLE).length;
-      const soldCards = allCards.filter(c => c.status === CardStatus.SOLD).length;
+      // Optimize card counting
+      let availableCards = 0;
+      let soldCards = 0;
+      const categoryCounts: Record<string, number> = {};
+      
+      allCards.forEach(c => {
+        if (c.status === CardStatus.AVAILABLE) {
+          availableCards++;
+          categoryCounts[c.categoryId] = (categoryCounts[c.categoryId] || 0) + 1;
+        } else if (c.status === CardStatus.SOLD) {
+          soldCards++;
+        }
+      });
 
       const totalSalesPoints = orders.reduce((acc, o) => acc + o.pointsUsed, 0);
       const totalAgentEarnings = orders.reduce((acc, o) => acc + o.agentEarnings, 0);
@@ -638,10 +726,10 @@ const AdminDashboard: React.FC<{ currentUser: User }> = ({ currentUser }) => {
       const acceptedReqs = pointRequests.filter(r => r.status === Status.COMPLETED).length + settlements.filter(r => r.status === Status.PAID).length;
       const rejectedReqs = pointRequests.filter(r => r.status === Status.REJECTED).length + settlements.filter(r => r.status === Status.REJECTED).length;
 
-      // Low Stock Logic with Network Name
+      // Low Stock Logic optimized
       const lowStockItems = categories.filter(c => {
-          const count = allCards.filter(k => k.categoryId === c.id && k.status === CardStatus.AVAILABLE).length;
-          return count < 5; // Threshold
+          const count = categoryCounts[c.id] || 0;
+          return count < 5;
       }).map(c => {
           const agent = users.find(u => u.id === c.agentId) as Agent;
           return {
@@ -670,28 +758,71 @@ const AdminDashboard: React.FC<{ currentUser: User }> = ({ currentUser }) => {
       };
 
       const getVal = (key: string, val: number | string) => {
-          if (typeof val === 'string') return val; 
+          // Priority to Google Sheets stats if available for certain keys
+          const googleKeyMap: Record<string, string> = {
+            users: 'users_active',
+            agents: 'agents_active',
+            managers: 'managers_active',
+            networks: 'networks_count',
+            cats: 'categories_count',
+            avail: 'available_cards',
+            sold: 'sold_cards',
+            sales: 'total_sales_points',
+            earnings: 'agent_earnings',
+            profit: 'system_profit',
+            finops: 'financial_operations',
+            pend_p: 'pending_deposits',
+            pend_s: 'pending_settlements',
+            appr: 'approved_requests',
+            rej: 'rejected_requests'
+          };
+
+          let finalVal = val;
+          if (googleStats && googleKeyMap[key] && googleStats[googleKeyMap[key]]) {
+            const gVal = googleStats[googleKeyMap[key]];
+            if (key === 'users' || key === 'agents' || key === 'managers') {
+               // Handle the "active / total" format
+               const totalKey = googleKeyMap[key].replace('_active', '_total');
+               if (googleStats[totalKey]) {
+                 finalVal = `${gVal} / ${googleStats[totalKey]}`;
+               } else {
+                 finalVal = gVal;
+               }
+            } else {
+              finalVal = isNaN(Number(gVal)) ? gVal : Number(gVal);
+            }
+          }
+
+          if (typeof finalVal === 'string') return finalVal; 
           const offset = statOffsets[key] || 0;
-          return Math.max(0, val - offset);
+          return Math.max(0, (finalVal as number) - offset);
+      };
+
+      const formatVal = (v: any, isCurrency = false) => {
+          if (typeof v === 'string') return v;
+          if (typeof v === 'number') {
+              return isCurrency ? v.toFixed(1) : v.toLocaleString();
+          }
+          return v || '0';
       };
 
       return {
           metrics: [
-              { key: 'users', title: 'المستخدمين (نشط/كلي)', val: getVal('users', raw.users), raw: raw.users, icon: '👥', color: 'indigo' },
-              { key: 'agents', title: 'الوكلاء (نشط/كلي)', val: getVal('agents', raw.agents), raw: raw.agents, icon: '📡', color: 'violet' },
-              { key: 'managers', title: 'المدراء (نشط/كلي)', val: getVal('managers', raw.managers), raw: raw.managers, icon: '👔', color: 'purple' },
-              { key: 'networks', title: 'عدد الشبكات', val: getVal('networks', raw.networks), raw: raw.networks, icon: '🌐', color: 'sky' },
-              { key: 'cats', title: 'عدد الفئات', val: getVal('cats', raw.cats), raw: raw.cats, icon: '🏷️', color: 'slate' },
-              { key: 'avail', title: 'كروت متاحة', val: getVal('avail', raw.avail), raw: raw.avail, icon: '🎫', color: 'emerald' },
-              { key: 'sold', title: 'كروت مباعة', val: getVal('sold', raw.sold), raw: raw.sold, icon: '📤', color: 'amber' },
-              { key: 'sales', title: 'إجمالي المبيعات (ن)', val: typeof raw.sales === 'number' ? (getVal('sales', raw.sales) as number).toLocaleString() : raw.sales, raw: raw.sales, icon: '💎', color: 'cyan' },
-              { key: 'earnings', title: 'أرباح الوكلاء', val: typeof raw.earnings === 'number' ? (getVal('earnings', raw.earnings) as number).toFixed(1) : raw.earnings, raw: raw.earnings, icon: '💰', color: 'teal' },
-              { key: 'profit', title: 'أرباح النظام', val: typeof raw.profit === 'number' ? (getVal('profit', raw.profit) as number).toFixed(1) : raw.profit, raw: raw.profit, icon: '📈', color: 'green' },
-              { key: 'finops', title: 'العمليات المالية', val: getVal('finops', raw.finops), raw: raw.finops, icon: '🏦', color: 'gray' },
-              { key: 'pend_p', title: 'شحن معلق', val: getVal('pend_p', raw.pend_p), raw: raw.pend_p, icon: '⏳', color: 'orange' },
-              { key: 'pend_s', title: 'تسويات معلقة', val: getVal('pend_s', raw.pend_s), raw: raw.pend_s, icon: '⚖️', color: 'rose' },
-              { key: 'appr', title: 'طلبات مقبولة', val: getVal('appr', raw.appr), raw: raw.appr, icon: '✅', color: 'blue' },
-              { key: 'rej', title: 'طلبات مرفوضة', val: getVal('rej', raw.rej), raw: raw.rej, icon: '❌', color: 'pink' },
+              { key: 'users', title: 'المستخدمين (نشط/كلي)', value: formatVal(getVal('users', raw.users)), raw: raw.users, icon: '👥', color: 'indigo' },
+              { key: 'agents', title: 'الوكلاء (نشط/كلي)', value: formatVal(getVal('agents', raw.agents)), raw: raw.agents, icon: '📡', color: 'violet' },
+              { key: 'managers', title: 'المدراء (نشط/كلي)', value: formatVal(getVal('managers', raw.managers)), raw: raw.managers, icon: '👔', color: 'purple' },
+              { key: 'networks', title: 'عدد الشبكات', value: formatVal(getVal('networks', raw.networks)), raw: raw.networks, icon: '🌐', color: 'sky' },
+              { key: 'cats', title: 'عدد الفئات', value: formatVal(getVal('cats', raw.cats)), raw: raw.cats, icon: '🏷️', color: 'slate' },
+              { key: 'avail', title: 'كروت متاحة', value: formatVal(getVal('avail', raw.avail)), raw: raw.avail, icon: '🎫', color: 'emerald' },
+              { key: 'sold', title: 'كروت مباعة', value: formatVal(getVal('sold', raw.sold)), raw: raw.sold, icon: '📤', color: 'amber' },
+              { key: 'sales', title: 'إجمالي المبيعات (ن)', value: formatVal(getVal('sales', raw.sales)), raw: raw.sales, icon: '💎', color: 'cyan' },
+              { key: 'earnings', title: 'أرباح الوكلاء', value: formatVal(getVal('earnings', raw.earnings), true), raw: raw.earnings, icon: '💰', color: 'teal' },
+              { key: 'profit', title: 'أرباح النظام', value: formatVal(getVal('profit', raw.profit), true), raw: raw.profit, icon: '📈', color: 'green' },
+              { key: 'finops', title: 'العمليات المالية', value: formatVal(getVal('finops', raw.finops)), raw: raw.finops, icon: '🏦', color: 'gray' },
+              { key: 'pend_p', title: 'شحن معلق', value: formatVal(getVal('pend_p', raw.pend_p)), raw: raw.pend_p, icon: '⏳', color: 'orange' },
+              { key: 'pend_s', title: 'تسويات معلقة', value: formatVal(getVal('pend_s', raw.pend_s)), raw: raw.pend_s, icon: '⚖️', color: 'rose' },
+              { key: 'appr', title: 'طلبات مقبولة', value: formatVal(getVal('appr', raw.appr)), raw: raw.appr, icon: '✅', color: 'blue' },
+              { key: 'rej', title: 'طلبات مرفوضة', value: formatVal(getVal('rej', raw.rej)), raw: raw.rej, icon: '❌', color: 'pink' },
           ],
           notifications: {
               pending: raw.pend_p + raw.pend_s,
@@ -701,7 +832,7 @@ const AdminDashboard: React.FC<{ currentUser: User }> = ({ currentUser }) => {
   }, [users, allCards, orders, pointRequests, settlements, categories, statOffsets]);
 
   // --- Reports Logic ---
-  const filteredReportData = useMemo(() => {
+  const reportData = useMemo(() => {
       const now = new Date();
       const isWithinRange = (dateStr: string) => {
           const d = new Date(dateStr);
@@ -716,16 +847,45 @@ const AdminDashboard: React.FC<{ currentUser: User }> = ({ currentUser }) => {
           return true;
       };
 
-      if (reportTab === 'sales') {
-          return orders.filter(o => isWithinRange(o.createdAt));
-      } else if (reportTab === 'shipping') {
-          return pointRequests.filter(r => isWithinRange(r.createdAt));
-      } else if (reportTab === 'agents_perf') {
-          return users.filter(u => u.role === UserRole.AGENT);
-      } else {
-          return users.filter(u => u.role === UserRole.USER && isWithinRange(u.createdAt));
+      const sales = orders.filter(o => isWithinRange(o.createdAt));
+      const shipping = pointRequests.filter(r => isWithinRange(r.createdAt));
+      const newUsers = users.filter(u => u.role === UserRole.USER && isWithinRange(u.createdAt));
+      const agentsPerf = users.filter(u => {
+          if (u.role !== UserRole.AGENT) return false;
+          if (debouncedAgentPerfSearch) {
+              const s = debouncedAgentPerfSearch.toLowerCase();
+              const agent = u as Agent;
+              return u.fullName.toLowerCase().includes(s) || 
+                     (agent.networkName || '').toLowerCase().includes(s);
+          }
+          return true;
+      });
+
+      return { sales, shipping, newUsers, agentsPerf };
+  }, [orders, pointRequests, users, reportTimeFilter, customReportDate, debouncedAgentPerfSearch]);
+
+  const filteredReportData = useMemo(() => {
+      let filtered: any[] = [];
+      if (reportTab === 'sales') filtered = reportData.sales;
+      else if (reportTab === 'shipping') filtered = reportData.shipping;
+      else if (reportTab === 'users') filtered = reportData.newUsers;
+      else if (reportTab === 'agents_perf') filtered = reportData.agentsPerf;
+      else if (reportTab === 'all') filtered = []; 
+
+      if (debouncedGlobalSearch) {
+        const s = debouncedGlobalSearch.toLowerCase();
+        filtered = filtered.filter(item => {
+          const name = item.fullName || item.userName || item.networkName || '';
+          const id = item.id || '';
+          const details = item.details || item.categoryName || '';
+          return name.toLowerCase().includes(s) || 
+                 id.toLowerCase().includes(s) || 
+                 details.toLowerCase().includes(s);
+        });
       }
-  }, [orders, pointRequests, users, reportTab, reportTimeFilter, customReportDate]);
+
+      return filtered;
+  }, [reportData, reportTab, debouncedGlobalSearch]);
 
   // --- Chart Data for Reports ---
   const reportChartData = useMemo(() => {
@@ -840,44 +1000,115 @@ const AdminDashboard: React.FC<{ currentUser: User }> = ({ currentUser }) => {
       if (requestFilter !== 'ALL') {
           combined = combined.filter(r => r.type === requestFilter);
       }
-      return combined;
-  }, [pointRequests, settlements, requestFilter]);
 
-  // --- Activity Log Data (Re-used) ---
-  const activityLog = useMemo(() => {
-    let allActivities = [
-        ...orders.map(o => ({ id: o.id, user: o.userName, details: `شراء: ${o.categoryName}`, network: o.networkName, value: o.pointsUsed, date: o.createdAt, type: 'مبيعات', status: 'مكتمل', original: o })),
-        ...pointRequests.map(p => ({ id: p.id, user: p.userName, details: `إيداع: ${p.paymentMethod}`, network: 'النظام', value: p.amount, date: p.createdAt, type: 'شحن', status: p.status, original: p })),
-        ...settlements.map(s => ({ id: s.id, user: s.agentName, details: `سحب: ${s.bankDetails.bankName}`, network: s.networkName, value: s.agentEarnings, date: s.createdAt, type: 'تسوية', status: s.status, original: s })),
-        ...systemLogs.map(l => ({ id: l.id, user: l.performedBy, details: l.details, network: 'إداري', value: '-', date: l.timestamp, type: l.type === 'RESET' ? 'تصفير' : 'نظام', status: 'منفذ', original: l }))
-    ];
-    if (logFilter !== 'ALL') {
-        allActivities = allActivities.filter(act => {
-            switch(logFilter) {
-                case 'SALES': return act.type === 'مبيعات';
-                case 'DEPOSITS': return act.type === 'شحن';
-                case 'SETTLEMENTS': return act.type === 'تسوية';
-                case 'SYSTEM': return act.type === 'نظام' || act.type === 'تصفير';
-                case 'AGENTS': return act.type === 'تسوية' || (act.type === 'نظام' && act.details.includes('وكيل'));
-                case 'USERS': return act.type === 'شحن' || act.type === 'مبيعات';
-                default: return true;
-            }
+      if (debouncedGlobalSearch) {
+        const s = debouncedGlobalSearch.toLowerCase();
+        combined = combined.filter(r => {
+          const name = 'agentName' in r ? r.agentName : r.userName;
+          return name.toLowerCase().includes(s) || 
+                 r.id.toLowerCase().includes(s) || 
+                 (r as any).paymentMethod?.toLowerCase().includes(s) ||
+                 (r as any).referenceNumber?.toLowerCase().includes(s);
         });
+      }
+
+      return combined;
+  }, [pointRequests, settlements, requestFilter, debouncedGlobalSearch]);
+
+  // --- Activity Log Data (Optimized) ---
+  const activityLog = useMemo(() => {
+    const logs: any[] = [];
+    
+    orders.forEach(o => {
+      logs.push({
+        id: o.id,
+        user: o.userName,
+        details: `شراء كرت ${o.categoryName}`,
+        value: `${o.pointsUsed} ن`,
+        timestamp: o.createdAt,
+        type: 'PURCHASE',
+        status: 'COMPLETED',
+        source: o.networkName
+      });
+    });
+    
+    pointRequests.forEach(r => {
+      logs.push({
+        id: r.id,
+        user: r.userName,
+        details: `طلب شحن رصيد (${r.paymentMethod})`,
+        value: `${r.amount} ن`,
+        timestamp: r.createdAt,
+        type: 'DEPOSIT',
+        status: r.status,
+        source: r.paymentMethod
+      });
+    });
+    
+    settlements.forEach(s => {
+      logs.push({
+        id: s.id,
+        user: s.agentName,
+        details: `طلب تسوية أرباح`,
+        value: `${s.agentEarnings} ن`,
+        timestamp: s.createdAt,
+        type: 'SETTLEMENT',
+        status: s.status,
+        source: s.networkName
+      });
+    });
+
+    systemLogs.filter(l => l.action === 'تسجيل دخول').forEach(l => {
+        logs.push({
+            id: l.id,
+            user: l.performedBy,
+            details: 'تسجيل دخول للنظام',
+            value: '-',
+            timestamp: l.timestamp,
+            type: 'LOGIN',
+            status: 'SUCCESS',
+            source: 'Web'
+        });
+    });
+    
+    let filtered = logs.sort((a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime());
+
+    // Apply filters
+    if (activityTypeFilter !== 'ALL') {
+        filtered = filtered.filter(l => l.type === activityTypeFilter);
     }
-    if (logSearch) {
-        const s = logSearch.toLowerCase();
-        allActivities = allActivities.filter(act => 
-            act.user.toLowerCase().includes(s) || 
-            act.details.toLowerCase().includes(s) || 
-            act.network.toLowerCase().includes(s)
+
+    if (activitySearch) {
+        const s = activitySearch.toLowerCase();
+        filtered = filtered.filter(l => 
+            l.user.toLowerCase().includes(s) || 
+            l.details.toLowerCase().includes(s) || 
+            l.source.toLowerCase().includes(s)
         );
     }
-    return allActivities.sort((a,b) => new Date(b.date).getTime() - new Date(a.date).getTime()).slice(0, 100);
-  }, [orders, pointRequests, settlements, systemLogs, logFilter, logSearch]);
+
+    // Time Filter
+    const now = new Date();
+    filtered = filtered.filter(l => {
+        const d = new Date(l.timestamp);
+        if (activityTimeFilter === 'DAY') return d.toDateString() === now.toDateString();
+        if (activityTimeFilter === 'WEEK') { const ago = new Date(); ago.setDate(now.getDate() - 7); return d >= ago; }
+        if (activityTimeFilter === 'MONTH') return d.getMonth() === now.getMonth() && d.getFullYear() === now.getFullYear();
+        if (activityTimeFilter === 'CUSTOM' && activityCustomDate.start && activityCustomDate.end) {
+            const s = new Date(activityCustomDate.start); const e = new Date(activityCustomDate.end); e.setHours(23, 59, 59);
+            return d >= s && d <= e;
+        }
+        return true;
+    });
+
+    return filtered.map(l => ({
+        ...l,
+        formattedTime: new Date(l.timestamp).toLocaleString('ar-YE', { hour: '2-digit', minute: '2-digit', day: '2-digit', month: '2-digit' })
+    }));
+  }, [orders, pointRequests, settlements, systemLogs, activityTypeFilter, activitySearch, activityTimeFilter, activityCustomDate]);
 
   const menuItems = [
     { id: 'home', label: 'الرئيسية', icon: '🏠' },
-    { id: 'activity_log', label: 'سجل النشاط المتقدم', icon: '📜' },
     { id: 'requests', label: 'طلبات الشحن والدفع', icon: '💳' },
     { id: 'agents', label: 'الوكلاء والشبكات', icon: '📡' },
     { id: 'managers', label: 'المدراء', icon: '👔' },
@@ -943,7 +1174,7 @@ const AdminDashboard: React.FC<{ currentUser: User }> = ({ currentUser }) => {
                   <button
                       key={item.id}
                       onClick={() => handleNavigate(item.id as any)}
-                      className={`w-full flex items-center gap-3 px-4 py-3 rounded-xl font-bold transition-all text-xs ${activeSection === item.id ? 'bg-indigo-600 text-white shadow-lg' : 'text-slate-500 hover:bg-slate-50 dark:hover:bg-white/5'}`}
+                      className={`w-full flex items-center gap-3 px-4 py-3 rounded-xl font-bold transition-all duration-75 text-xs ${activeSection === item.id ? 'bg-indigo-600 text-white shadow-lg' : 'text-slate-500 hover:bg-slate-50 dark:hover:bg-white/5'}`}
                   >
                       <span>{item.icon}</span>
                       <span>{item.label}</span>
@@ -953,11 +1184,33 @@ const AdminDashboard: React.FC<{ currentUser: User }> = ({ currentUser }) => {
       </aside>
 
       {/* Main Content */}
-      <main className={`flex-1 transition-all duration-300 ${isSidebarOpen ? 'mr-64' : 'mr-0'} p-4 lg:p-8 max-w-full`}>
+      <main className={`flex-1 transition-all duration-300 ${isSidebarOpen ? 'mr-64' : 'mr-0'} p-2 max-w-full`}>
           
           <div className="lg:hidden flex justify-between items-center mb-6">
               <h1 className="font-black text-lg">لوحة التحكم</h1>
               <button onClick={() => setIsSidebarOpen(!isSidebarOpen)} className="p-2 bg-white rounded-lg shadow text-indigo-600">☰</button>
+          </div>
+
+          {/* Global Search Bar */}
+          <div className="mb-6 relative group">
+              <div className="absolute inset-y-0 right-0 pr-4 flex items-center pointer-events-none">
+                  <Icons.Search className="h-5 w-5 text-slate-400 group-focus-within:text-indigo-600 transition-colors" />
+              </div>
+              <input 
+                  type="text" 
+                  placeholder="بحث شامل في النظام (مستخدمين، طلبات، شبكات...)" 
+                  value={globalSearch}
+                  onChange={(e) => setGlobalSearch(e.target.value)}
+                  className="w-full bg-white dark:bg-slate-900 border border-slate-200 dark:border-white/10 p-4 pr-12 rounded-2xl font-bold text-sm outline-none focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-500 transition-all shadow-sm"
+              />
+              {globalSearch && (
+                  <button 
+                      onClick={() => setGlobalSearch('')}
+                      className="absolute inset-y-0 left-0 pl-4 flex items-center text-slate-400 hover:text-rose-500"
+                  >
+                      <Icons.X size={18} />
+                  </button>
+              )}
           </div>
 
           {activeSection === 'home' && (
@@ -986,85 +1239,148 @@ const AdminDashboard: React.FC<{ currentUser: User }> = ({ currentUser }) => {
                       ))}
                   </div>
 
-                  {/* Quick Activity Preview */}
-                  <div className="glass-card rounded-[1.5rem] border border-slate-200 dark:border-white/5 overflow-hidden shadow-sm">
-                      <div className="p-4 bg-white dark:bg-white/5 border-b dark:border-white/10 flex justify-between items-center">
-                          <h3 className="font-black text-sm text-slate-800 dark:text-slate-200">آخر النشاطات</h3>
-                          <button onClick={() => handleNavigate('activity_log')} className="text-[10px] font-black text-indigo-600 hover:underline">عرض السجل الكامل</button>
+                  {/* Enhanced Recent Activities Table */}
+                  <div className="glass-card rounded-[2rem] border border-slate-200 dark:border-white/5 overflow-hidden shadow-sm">
+                      <div className="p-6 bg-white dark:bg-white/5 border-b dark:border-white/10 flex flex-col md:flex-row justify-between items-center gap-4">
+                          <div className="flex items-center gap-3">
+                              <div className="w-10 h-10 bg-indigo-50 text-indigo-600 rounded-xl flex items-center justify-center text-xl">📋</div>
+                              <div>
+                                  <h3 className="font-black text-sm text-slate-800 dark:text-slate-200">آخر النشاطات والعمليات</h3>
+                                  <p className="text-[10px] text-slate-400 font-bold">متابعة حية لكافة تحركات النظام</p>
+                              </div>
+                          </div>
+                          <div className="flex flex-wrap items-center gap-2">
+                              <div className="relative group">
+                                  <Icons.Search className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-400" size={14} />
+                                  <input 
+                                      type="text" 
+                                      placeholder="بحث..." 
+                                      value={activitySearch}
+                                      onChange={(e) => setActivitySearch(e.target.value)}
+                                      className="pr-9 pl-3 py-2 bg-slate-50 dark:bg-slate-900 border border-slate-200 dark:border-white/10 rounded-xl text-[10px] font-bold outline-none focus:border-indigo-500 w-40"
+                                  />
+                              </div>
+                              <select 
+                                  value={activityTypeFilter}
+                                  onChange={(e) => setActivityTypeFilter(e.target.value as any)}
+                                  className="px-3 py-2 bg-slate-50 dark:bg-slate-900 border border-slate-200 dark:border-white/10 rounded-xl text-[10px] font-bold outline-none"
+                              >
+                                  <option value="ALL">كل العمليات</option>
+                                  <option value="PURCHASE">مشتريات</option>
+                                  <option value="DEPOSIT">شحن</option>
+                                  <option value="SETTLEMENT">تسويات</option>
+                                  <option value="LOGIN">دخول</option>
+                              </select>
+                              <select 
+                                  value={activityTimeFilter}
+                                  onChange={(e) => setActivityTimeFilter(e.target.value as any)}
+                                  className="px-3 py-2 bg-slate-50 dark:bg-slate-900 border border-slate-200 dark:border-white/10 rounded-xl text-[10px] font-bold outline-none"
+                              >
+                                  <option value="DAY">اليوم</option>
+                                  <option value="WEEK">هذا الأسبوع</option>
+                                  <option value="MONTH">هذا الشهر</option>
+                                  <option value="CUSTOM">مخصص</option>
+                              </select>
+                              <button 
+                                  onClick={() => {
+                                      const headers = ['الوقت', 'المستخدم', 'النوع', 'التفاصيل', 'القيمة', 'الحالة', 'المصدر'];
+                                      const rows = activityLog.slice(0, activitiesLimit).map(l => [
+                                          l.formattedTime,
+                                          l.user,
+                                          l.type,
+                                          l.details,
+                                          l.value,
+                                          l.status,
+                                          l.source
+                                      ]);
+                                      const csvContent = "data:text/csv;charset=utf-8," 
+                                          + headers.join(",") + "\n" 
+                                          + rows.map(e => e.join(",")).join("\n");
+                                      const encodedUri = encodeURI(csvContent);
+                                      const link = document.createElement("a");
+                                      link.setAttribute("href", encodedUri);
+                                      link.setAttribute("download", `activities_${new Date().toISOString()}.csv`);
+                                      document.body.appendChild(link);
+                                      link.click();
+                                  }}
+                                  className="p-2 bg-emerald-50 text-emerald-600 rounded-xl hover:bg-emerald-600 hover:text-white transition-all"
+                                  title="تصدير CSV"
+                              >
+                                  <Icons.Download size={16} />
+                              </button>
+                          </div>
                       </div>
                       <div className="overflow-x-auto">
-                          <table className="w-full text-right text-[11px] border-collapse">
-                              <tbody className="divide-y divide-slate-100 dark:divide-white/5 font-medium">
-                                  {activityLog.slice(0, 5).map((act) => (
-                                      <tr key={act.id} className="hover:bg-indigo-50/30 dark:hover:bg-white/5 transition-colors">
-                                          <td className="p-3 font-bold">{act.user}</td>
-                                          <td className="p-3 text-slate-500">{act.details}</td>
-                                          <td className="p-3 text-center font-mono font-black">{act.value}</td>
-                                          <td className="p-3 text-center text-[10px] text-slate-400" dir="ltr">{new Date(act.date).toLocaleTimeString('ar-YE')}</td>
-                                          <td className="p-3 text-center"><span className={`px-2 py-1 rounded text-[9px] ${act.type==='مبيعات'?'bg-cyan-100':act.type==='شحن'?'bg-emerald-100':act.type==='تسوية'?'bg-amber-100':'bg-slate-200'}`}>{act.type}</span></td>
-                                      </tr>
-                                  ))}
-                              </tbody>
-                          </table>
-                      </div>
-                  </div>
-              </div>
-          )}
-
-          {/* ADVANCED ACTIVITY LOG SECTION */}
-          {activeSection === 'activity_log' && (
-              <div className="space-y-6 animate-in slide-in-from-bottom-4">
-                  <SectionHeader title="سجل النشاط المتقدم" subtitle="مراقبة شاملة لجميع العمليات المالية والإدارية في النظام" />
-                  
-                  <div className="glass-card rounded-[1.5rem] border border-slate-200 dark:border-white/5 overflow-hidden shadow-sm">
-                      <div className="p-4 bg-white dark:bg-white/5 border-b dark:border-white/10 space-y-4">
-                          <div className="flex justify-between items-center">
-                              <h3 className="font-black text-sm text-slate-800 dark:text-slate-200">الفلاتر والبحث</h3>
-                              <span className="text-[10px] bg-indigo-50 text-indigo-700 px-3 py-1 rounded-full font-bold border border-indigo-100">مباشر • Live</span>
-                          </div>
-                          
-                          <div className="flex flex-col md:flex-row gap-2">
-                              <div className="relative flex-1">
-                                  <input type="text" placeholder="بحث شامل (اسم، تفاصيل، شبكة)..." value={logSearch} onChange={(e) => setLogSearch(e.target.value)} className="w-full p-3 pr-10 rounded-xl bg-slate-50 dark:bg-indigo-950/50 border border-slate-200 dark:border-white/10 text-xs font-bold focus:outline-none focus:border-indigo-500 transition-all" />
-                                  <span className="absolute right-3 top-3 text-slate-400">🔍</span>
-                              </div>
-                              <div className="relative">
-                                  <button onClick={() => setIsFilterOpen(!isFilterOpen)} className={`w-full md:w-auto h-full px-4 py-3 rounded-xl text-xs font-black transition-all border flex items-center justify-between gap-3 ${isFilterOpen || logFilter !== 'ALL' ? 'bg-indigo-600 text-white border-indigo-600 shadow-md' : 'bg-slate-50 dark:bg-indigo-950/50 text-slate-600 dark:text-slate-300 border-slate-200 hover:bg-slate-100'}`}><span>🌪️ {currentFilterLabel}</span><span className="text-[10px] opacity-70">▼</span></button>
-                                  {isFilterOpen && (
-                                      <div className="absolute top-full right-0 mt-2 w-full md:w-56 bg-white dark:bg-indigo-950 border border-slate-100 dark:border-white/10 rounded-xl shadow-2xl z-20 overflow-hidden animate-in fade-in zoom-in duration-200">
-                                          {logFilters.map(f => (
-                                              <button key={f.id} onClick={() => { setLogFilter(f.id); setIsFilterOpen(false); }} className={`w-full text-right px-4 py-3 text-[11px] font-bold hover:bg-slate-50 border-b border-slate-50 last:border-0 ${logFilter === f.id ? 'text-indigo-600 bg-indigo-50' : 'text-slate-600'}`}>{f.label}</button>
-                                          ))}
-                                      </div>
-                                  )}
-                              </div>
-                          </div>
-                      </div>
-
-                      <div className="overflow-x-auto min-h-[400px]">
-                          <table className="w-full text-right text-[11px] border-collapse whitespace-nowrap">
-                              <thead className="bg-slate-100 dark:bg-white/10 text-slate-600 dark:text-slate-300 font-bold sticky top-0 z-10">
-                                  <tr><th className="p-3">المستخدم / الوكيل</th><th className="p-3">التفاصيل</th><th className="p-3">المصدر</th><th className="p-3 text-center">القيمة</th><th className="p-3 text-center">التوقيت</th><th className="p-3 text-center">النوع</th><th className="p-3 text-center w-24">إجراء</th></tr>
+                          <table className="w-full text-right text-[10px] border-collapse">
+                              <thead className="bg-slate-50 dark:bg-white/5 border-b dark:border-white/10 text-slate-500 font-black uppercase tracking-widest">
+                                  <tr>
+                                      <th className="px-3 py-2">الوقت</th>
+                                      <th className="px-3 py-2">المستخدم</th>
+                                      <th className="px-3 py-2">النوع</th>
+                                      <th className="px-3 py-2">التفاصيل</th>
+                                      <th className="px-3 py-2 text-center">القيمة</th>
+                                      <th className="px-3 py-2 text-center">الحالة</th>
+                                      <th className="px-3 py-2 text-center">المصدر</th>
+                                  </tr>
                               </thead>
-                              <tbody className="divide-y divide-slate-100 dark:divide-white/5 font-medium">
-                                  {activityLog.map((act) => (
+                              <tbody className="divide-y divide-slate-100 dark:divide-white/5 font-bold">
+                                  {activityLog.slice(0, activitiesLimit).map((act) => (
                                       <tr key={act.id} className="hover:bg-indigo-50/30 dark:hover:bg-white/5 transition-colors group">
-                                          <td className="p-3 font-bold text-slate-700 dark:text-slate-300">{act.user}</td>
-                                          <td className="p-3 text-slate-500">{act.details}</td>
-                                          <td className="p-3 text-indigo-600">{act.network}</td>
-                                          <td className="p-3 text-center font-mono font-black">{act.value}</td>
-                                          <td className="p-3 text-center text-[10px] text-slate-400" dir="ltr">{new Date(act.date).toLocaleString('ar-YE')}</td>
-                                          <td className="p-3 text-center"><span className={`px-2 py-1 rounded text-[9px] ${act.type==='مبيعات'?'bg-cyan-100':act.type==='شحن'?'bg-emerald-100':act.type==='تسوية'?'bg-amber-100':'bg-slate-200'}`}>{act.type}</span></td>
-                                          <td className="p-3 text-center"><button onClick={() => { setViewModal({ isOpen: true, title: 'تفاصيل العملية', data: act.original, type: act.type }); StorageService.logAction('عرض تفاصيل', `عرض تفاصيل عملية ${act.type}`, currentUser.fullName, 'SYSTEM'); }} className="px-3 py-1 bg-indigo-50 text-indigo-700 rounded hover:bg-indigo-600 hover:text-white transition-colors">عرض</button></td>
+                                          <td className="px-3 py-2 text-slate-400 font-mono" dir="ltr">{act.formattedTime}</td>
+                                          <td className="px-3 py-2">
+                                              <div className="flex items-center gap-2">
+                                                  <div className="w-6 h-6 rounded-full bg-slate-100 flex items-center justify-center text-[10px]">👤</div>
+                                                  <span className="text-slate-800 dark:text-slate-200">{act.user}</span>
+                                              </div>
+                                          </td>
+                                          <td className="px-3 py-2">
+                                              <span className={`px-2 py-1 rounded-lg text-[9px] font-black ${
+                                                  act.type === 'PURCHASE' ? 'bg-cyan-50 text-cyan-600' : 
+                                                  act.type === 'DEPOSIT' ? 'bg-emerald-50 text-emerald-600' : 
+                                                  act.type === 'SETTLEMENT' ? 'bg-amber-50 text-amber-600' : 
+                                                  act.type === 'LOGIN' ? 'bg-indigo-50 text-indigo-600' : 'bg-slate-100'
+                                              }`}>
+                                                  {act.type === 'PURCHASE' ? 'مشتريات' : 
+                                                   act.type === 'DEPOSIT' ? 'شحن' : 
+                                                   act.type === 'SETTLEMENT' ? 'تسوية' : 
+                                                   act.type === 'LOGIN' ? 'دخول' : act.type}
+                                              </span>
+                                          </td>
+                                          <td className="px-3 py-2 text-slate-500">{act.details}</td>
+                                          <td className="px-3 py-2 text-center font-black text-indigo-600">{act.value}</td>
+                                          <td className="px-3 py-2 text-center">
+                                              <span className={`px-2 py-0.5 rounded-full text-[8px] font-black ${
+                                                  act.status === 'COMPLETED' || act.status === 'PAID' || act.status === 'SUCCESS' ? 'bg-emerald-100 text-emerald-700' : 
+                                                  act.status === 'PENDING' ? 'bg-blue-100 text-blue-700' : 'bg-rose-100 text-rose-700'
+                                              }`}>
+                                                  {act.status}
+                                              </span>
+                                          </td>
+                                          <td className="px-3 py-2 text-center text-slate-400">{act.source}</td>
                                       </tr>
                                   ))}
-                                  {activityLog.length === 0 && <tr><td colSpan={7} className="p-10 text-center text-slate-400 font-bold">لا توجد سجلات مطابقة للبحث</td></tr>}
                               </tbody>
                           </table>
                       </div>
+                      {activityLog.length > activitiesLimit && (
+                          <div className="p-4 text-center border-t dark:border-white/10">
+                              <button 
+                                  onClick={() => setActivitiesLimit(prev => prev + 50)}
+                                  className="px-8 py-2 bg-slate-100 dark:bg-white/5 text-slate-600 dark:text-slate-300 rounded-xl font-black text-[10px] hover:bg-indigo-600 hover:text-white transition-all shadow-sm"
+                              >
+                                  عرض المزيد من النشاطات ⬇️
+                              </button>
+                          </div>
+                      )}
+                      {activityLog.length === 0 && (
+                          <div className="p-12 text-center text-slate-400 italic">
+                              لا توجد نشاطات مسجلة حالياً
+                          </div>
+                      )}
                   </div>
               </div>
           )}
+
 
           {/* NEW SECTION: SHIPPING & PAYMENT REQUESTS */}
           {activeSection === 'requests' && (
@@ -1083,7 +1399,7 @@ const AdminDashboard: React.FC<{ currentUser: User }> = ({ currentUser }) => {
                       <div className="overflow-x-auto">
                           <table className="w-full text-right text-xs">
                               <thead className="bg-slate-100 text-slate-600 font-black">
-                                  <tr><th className="p-4">الاسم</th><th className="p-4">النوع</th><th className="p-4">القيمة</th><th className="p-4">التفاصيل / البنك</th><th className="p-4">التاريخ</th><th className="p-4">الحالة</th><th className="p-4 text-center">تحكم</th></tr>
+                                  <tr><th className="px-3 py-2">الاسم</th><th className="px-3 py-2">النوع</th><th className="px-3 py-2">القيمة</th><th className="px-3 py-2">التفاصيل / البنك</th><th className="px-3 py-2">التاريخ</th><th className="px-3 py-2">الحالة</th><th className="px-3 py-2 text-center">تحكم</th></tr>
                               </thead>
                               <tbody className="divide-y divide-slate-100 font-bold">
                                   {combinedRequests.map(item => {
@@ -1095,13 +1411,13 @@ const AdminDashboard: React.FC<{ currentUser: User }> = ({ currentUser }) => {
 
                                       return (
                                           <tr key={item.id} className="hover:bg-slate-50">
-                                              <td className="p-4">{name}</td>
-                                              <td className="p-4"><span className={`px-2 py-1 rounded text-[10px] ${isSettlement ? 'bg-amber-100 text-amber-700' : 'bg-emerald-100 text-emerald-700'}`}>{isSettlement ? 'تسوية وكيل' : 'شحن مستخدم'}</span></td>
-                                              <td className="p-4 font-black">{val}</td>
-                                              <td className="p-4 text-[10px] opacity-70">{details} <br/> <span className="font-mono">{ref}</span></td>
-                                              <td className="p-4 text-[10px] opacity-50" dir="ltr">{new Date(item.createdAt).toLocaleDateString()}</td>
-                                              <td className="p-4"><span className={`px-2 py-1 rounded text-[10px] ${item.status === Status.PENDING ? 'bg-blue-100 text-blue-600' : item.status === Status.COMPLETED || item.status === Status.PAID ? 'bg-green-100 text-green-600' : 'bg-red-100 text-red-600'}`}>{item.status}</span></td>
-                                              <td className="p-4">
+                                              <td className="px-3 py-2">{name}</td>
+                                              <td className="px-3 py-2"><span className={`px-2 py-1 rounded text-[10px] ${isSettlement ? 'bg-amber-100 text-amber-700' : 'bg-emerald-100 text-emerald-700'}`}>{isSettlement ? 'تسوية وكيل' : 'شحن مستخدم'}</span></td>
+                                              <td className="px-3 py-2 font-black">{val}</td>
+                                              <td className="px-3 py-2 text-[10px] opacity-70">{details} <br/> <span className="font-mono">{ref}</span></td>
+                                              <td className="px-3 py-2 text-[10px] opacity-50" dir="ltr">{new Date(item.createdAt).toLocaleDateString()}</td>
+                                              <td className="px-3 py-2"><span className={`px-2 py-1 rounded text-[10px] ${item.status === Status.PENDING ? 'bg-blue-100 text-blue-600' : item.status === Status.COMPLETED || item.status === Status.PAID ? 'bg-green-100 text-green-600' : 'bg-red-100 text-red-600'}`}>{item.status}</span></td>
+                                              <td className="px-3 py-2">
                                                   {item.status === Status.PENDING && (
                                                       <div className="flex justify-center gap-2">
                                                           <button onClick={() => handleRequestAction(item, 'APPROVE')} className="p-2 bg-emerald-50 text-emerald-600 rounded-lg hover:bg-emerald-100" title="قبول">✅</button>
@@ -1136,16 +1452,33 @@ const AdminDashboard: React.FC<{ currentUser: User }> = ({ currentUser }) => {
                       </button>
                   </div>
                   
-                  {/* Report Tabs */}
-                  <div className="flex gap-2 mb-4 overflow-x-auto no-scrollbar pb-1">
-                      <button onClick={() => setReportTab('sales')} className={`px-6 py-3 rounded-xl font-black text-xs transition-all whitespace-nowrap ${reportTab==='sales'?'bg-indigo-600 text-white shadow-lg':'bg-white text-slate-500'}`}>كشف المبيعات</button>
-                      <button onClick={() => setReportTab('shipping')} className={`px-6 py-3 rounded-xl font-black text-xs transition-all whitespace-nowrap ${reportTab==='shipping'?'bg-indigo-600 text-white shadow-lg':'bg-white text-slate-500'}`}>تقارير الشحن</button>
-                      <button onClick={() => setReportTab('users')} className={`px-6 py-3 rounded-xl font-black text-xs transition-all whitespace-nowrap ${reportTab==='users'?'bg-indigo-600 text-white shadow-lg':'bg-white text-slate-500'}`}>المستخدمين الجدد</button>
-                      <button onClick={() => setReportTab('agents_perf')} className={`px-6 py-3 rounded-xl font-black text-xs transition-all whitespace-nowrap ${reportTab==='agents_perf'?'bg-indigo-600 text-white shadow-lg':'bg-white text-slate-500'}`}>أداء الوكلاء 📡</button>
+                  {/* Report Tabs & Type Dropdown */}
+                  <div className="flex flex-col sm:flex-row gap-4 mb-4">
+                      <div className="flex-1 flex gap-2 overflow-x-auto no-scrollbar pb-1">
+                          <button onClick={() => setReportTab('all')} className={`px-6 py-3 rounded-xl font-black text-xs transition-all whitespace-nowrap ${reportTab==='all'?'bg-indigo-600 text-white shadow-lg':'bg-white text-slate-500'}`}>الكل</button>
+                          <button onClick={() => setReportTab('sales')} className={`px-6 py-3 rounded-xl font-black text-xs transition-all whitespace-nowrap ${reportTab==='sales'?'bg-indigo-600 text-white shadow-lg':'bg-white text-slate-500'}`}>كشف المبيعات</button>
+                          <button onClick={() => setReportTab('shipping')} className={`px-6 py-3 rounded-xl font-black text-xs transition-all whitespace-nowrap ${reportTab==='shipping'?'bg-indigo-600 text-white shadow-lg':'bg-white text-slate-500'}`}>تقارير الشحن</button>
+                          <button onClick={() => setReportTab('users')} className={`px-6 py-3 rounded-xl font-black text-xs transition-all whitespace-nowrap ${reportTab==='users'?'bg-indigo-600 text-white shadow-lg':'bg-white text-slate-500'}`}>المستخدمين الجدد</button>
+                          <button onClick={() => setReportTab('agents_perf')} className={`px-6 py-3 rounded-xl font-black text-xs transition-all whitespace-nowrap ${reportTab==='agents_perf'?'bg-indigo-600 text-white shadow-lg':'bg-white text-slate-500'}`}>أداء الوكلاء 📡</button>
+                      </div>
+                      
+                      <div className="w-full sm:w-64">
+                          <select 
+                            value={reportTab} 
+                            onChange={(e) => setReportTab(e.target.value as any)}
+                            className="w-full p-3 bg-white dark:bg-slate-900 border border-slate-200 dark:border-white/10 rounded-xl font-bold text-xs outline-none focus:border-indigo-500"
+                          >
+                            <option value="all">الكل</option>
+                            <option value="sales">كشف المبيعات</option>
+                            <option value="shipping">تقارير الشحن</option>
+                            <option value="users">المستخدمين الجدد</option>
+                            <option value="agents_perf">أداء الوكلاء</option>
+                          </select>
+                      </div>
                   </div>
 
                   {/* Time Filter (Common for Sales/Shipping) */}
-                  {reportTab !== 'users' && reportTab !== 'agents_perf' && (
+                  {(reportTab === 'all' || reportTab === 'sales' || reportTab === 'shipping') && (
                       <div className="glass-card p-4 rounded-xl flex flex-wrap gap-2 items-center mb-4">
                           <span className="text-xs font-bold text-slate-500 ml-2">الفترة الزمنية:</span>
                           {['DAY','WEEK','MONTH','YEAR'].map(t => (
@@ -1164,233 +1497,198 @@ const AdminDashboard: React.FC<{ currentUser: User }> = ({ currentUser }) => {
                   )}
 
                   {/* Report Content */}
-                  <div id="report-content" className="glass-card p-6 rounded-[2rem] border min-h-[400px] bg-white dark:bg-slate-900">
-                      {reportTab === 'sales' && (
+                  <div id="report-content" className="glass-card p-6 rounded-[2rem] border min-h-[400px] bg-white dark:bg-slate-900 overflow-hidden space-y-12">
+                      {(reportTab === 'all' || reportTab === 'sales') && (
                           <div className="space-y-6">
+                              {reportTab === 'all' && <h3 className="font-black text-lg border-b pb-2">📊 كشف المبيعات</h3>}
                               <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mb-6">
                                   <div className="p-4 bg-cyan-50 dark:bg-cyan-900/20 rounded-2xl border border-cyan-100 dark:border-cyan-900/30">
                                       <p className="text-[10px] font-black text-cyan-600 uppercase tracking-widest">إجمالي المبيعات</p>
-                                      <h4 className="text-2xl font-black text-cyan-700 dark:text-cyan-400">{(filteredReportData as Order[]).reduce((acc, o) => acc + o.pointsUsed, 0).toLocaleString()} ن</h4>
+                                      <p className="text-2xl font-black">{reportData.sales.reduce((acc, o) => acc + (o as Order).pointsUsed, 0).toLocaleString()} ن</p>
                                   </div>
                                   <div className="p-4 bg-emerald-50 dark:bg-emerald-900/20 rounded-2xl border border-emerald-100 dark:border-emerald-900/30">
-                                      <p className="text-[10px] font-black text-emerald-600 uppercase tracking-widest">ربح النظام</p>
-                                      <h4 className="text-2xl font-black text-emerald-700 dark:text-emerald-400">{(filteredReportData as Order[]).reduce((acc, o) => acc + o.masterProfit, 0).toFixed(2)} ن</h4>
+                                      <p className="text-[10px] font-black text-emerald-600 uppercase tracking-widest">أرباح النظام</p>
+                                      <p className="text-2xl font-black">{reportData.sales.reduce((acc, o) => acc + (o as Order).masterProfit, 0).toFixed(2)} ن</p>
                                   </div>
-                                  <div className="p-4 bg-indigo-50 dark:bg-indigo-900/20 rounded-2xl border border-indigo-100 dark:border-indigo-900/30">
-                                      <p className="text-[10px] font-black text-indigo-600 uppercase tracking-widest">عدد العمليات</p>
-                                      <h4 className="text-2xl font-black text-indigo-700 dark:text-indigo-400">{(filteredReportData as Order[]).length}</h4>
+                                  <div className="p-4 bg-amber-50 dark:bg-amber-900/20 rounded-2xl border border-amber-100 dark:border-amber-900/30">
+                                      <p className="text-[10px] font-black text-amber-600 uppercase tracking-widest">عمولات الوكلاء</p>
+                                      <p className="text-2xl font-black">{reportData.sales.reduce((acc, o) => acc + (o as Order).agentEarnings, 0).toFixed(2)} ن</p>
                                   </div>
                               </div>
-                              <h3 className="font-bold text-lg">تحليل المبيعات</h3>
-                              {reportChartData && <SimpleBarChart data={reportChartData.data} labels={reportChartData.labels} color="bg-cyan-500" />}
-                              <table className="w-full text-right text-xs mt-6">
-                                  <thead className="bg-slate-100 dark:bg-white/10 text-slate-600 dark:text-slate-300 font-black"><tr><th className="p-3">التاريخ</th><th className="p-3">العميل</th><th className="p-3">الفئة</th><th className="p-3 text-center">القيمة</th><th className="p-3 text-center">الربح</th></tr></thead>
-                                  <tbody className="divide-y divide-slate-100 dark:divide-white/5 font-medium">
-                                      {(filteredReportData as Order[]).map(o => (
-                                          <tr key={o.id} className="hover:bg-slate-50 dark:hover:bg-white/5"><td className="p-3 text-slate-400">{new Date(o.createdAt).toLocaleDateString()}</td><td className="p-3 font-bold">{o.userName}</td><td className="p-3">{o.categoryName}</td><td className="p-3 text-center font-black text-cyan-600">{o.pointsUsed}</td><td className="p-3 text-center text-emerald-600">{o.masterProfit.toFixed(1)}</td></tr>
-                                      ))}
-                                  </tbody>
-                              </table>
-                          </div>
-                      )}
 
-                      {reportTab === 'shipping' && (
-                          <div className="space-y-6">
-                              <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mb-6">
-                                  <div className="p-4 bg-orange-50 dark:bg-orange-900/20 rounded-2xl border border-orange-100 dark:border-orange-900/30">
-                                      <p className="text-[10px] font-black text-orange-600 uppercase tracking-widest">إجمالي الشحن</p>
-                                      <h4 className="text-2xl font-black text-orange-700 dark:text-orange-400">{(filteredReportData as PointRequest[]).reduce((acc, r) => acc + r.amount, 0).toLocaleString()} ن</h4>
-                                  </div>
-                                  <div className="p-4 bg-indigo-50 dark:bg-indigo-900/20 rounded-2xl border border-indigo-100 dark:border-indigo-900/30">
-                                      <p className="text-[10px] font-black text-indigo-600 uppercase tracking-widest">عدد الطلبات</p>
-                                      <h4 className="text-2xl font-black text-indigo-700 dark:text-indigo-400">{(filteredReportData as PointRequest[]).length}</h4>
-                                  </div>
-                              </div>
-                              <h3 className="font-bold text-lg">تحليل عمليات الشحن</h3>
-                              {reportChartData && <SimpleBarChart data={reportChartData.data} labels={reportChartData.labels} color="bg-orange-500" />}
-                              <table className="w-full text-right text-xs mt-6">
-                                  <thead className="bg-slate-100 dark:bg-white/10 text-slate-600 dark:text-slate-300 font-black"><tr><th className="p-3">التاريخ</th><th className="p-3">المستخدم</th><th className="p-3">الطريقة</th><th className="p-3 text-center">المبلغ</th><th className="p-3 text-center">الحالة</th></tr></thead>
-                                  <tbody className="divide-y divide-slate-100 dark:divide-white/5 font-medium">
-                                      {(filteredReportData as PointRequest[]).map(r => (
-                                          <tr key={r.id} className="hover:bg-slate-50 dark:hover:bg-white/5"><td className="p-3 text-slate-400">{new Date(r.createdAt).toLocaleDateString()}</td><td className="p-3 font-bold">{r.userName}</td><td className="p-3">{r.paymentMethod}</td><td className="p-3 text-center font-black text-orange-600">{r.amount}</td><td className="p-3 text-center"><span className={`px-2 py-0.5 rounded text-[10px] ${r.status === Status.COMPLETED ? 'bg-emerald-100 text-emerald-600' : 'bg-amber-100 text-amber-600'}`}>{r.status}</span></td></tr>
-                                      ))}
-                                  </tbody>
-                              </table>
-                          </div>
-                      )}
-
-                      {reportTab === 'users' && (
-                          <div className="space-y-6">
-                              <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mb-6">
-                                  <div className="p-4 bg-indigo-50 dark:bg-indigo-900/20 rounded-2xl border border-indigo-100 dark:border-indigo-900/30">
-                                      <p className="text-[10px] font-black text-indigo-600 uppercase tracking-widest">المستخدمين الجدد</p>
-                                      <h4 className="text-2xl font-black text-indigo-700 dark:text-indigo-400">{(filteredReportData as User[]).length}</h4>
-                                  </div>
-                                  <div className="p-4 bg-emerald-50 dark:bg-emerald-900/20 rounded-2xl border border-emerald-100 dark:border-emerald-900/30">
-                                      <p className="text-[10px] font-black text-emerald-600 uppercase tracking-widest">المستخدمين النشطين</p>
-                                      <h4 className="text-2xl font-black text-emerald-700 dark:text-emerald-400">{(filteredReportData as User[]).filter(u => u.isActive).length}</h4>
-                                  </div>
-                              </div>
-                              <h3 className="font-bold text-lg">سجل المستخدمين المسجلين</h3>
-                              <table className="w-full text-right text-xs border-collapse">
-                                  <thead className="bg-slate-100 dark:bg-white/10 text-slate-600 dark:text-slate-300 font-black">
-                                      <tr><th className="p-4">الاسم</th><th className="p-4">البريد</th><th className="p-4">تاريخ التسجيل</th><th className="p-4">نوع الحساب</th><th className="p-4">الحالة</th><th className="p-4 text-center">إجراء</th></tr>
-                                  </thead>
-                                  <tbody className="divide-y divide-slate-100 dark:divide-white/5 font-bold">
-                                      {(filteredReportData as User[]).map(u => (
-                                          <tr key={u.id} className="hover:bg-slate-50 dark:hover:bg-white/5">
-                                              <td className="p-4">{u.fullName}</td>
-                                              <td className="p-4 opacity-70">{u.email}</td>
-                                              <td className="p-4" dir="ltr">{new Date(u.createdAt).toLocaleDateString()}</td>
-                                              <td className="p-4"><span className="px-2 py-1 bg-indigo-50 text-indigo-600 rounded text-[10px]">مستخدم</span></td>
-                                              <td className="p-4"><span className={`px-2 py-1 rounded text-[10px] ${u.isActive ? 'bg-emerald-100 text-emerald-600' : 'bg-rose-100 text-rose-600'}`}>{u.isActive ? 'نشط' : 'موقف'}</span></td>
-                                              <td className="p-4 text-center">
-                                                  <button onClick={() => setViewModal({isOpen: true, title: 'ملف المستخدم', data: u, type: 'مستخدم'})} className="px-3 py-1 bg-slate-100 dark:bg-white/10 rounded hover:bg-slate-200 text-[10px]">عرض</button>
-                                              </td>
+                              <div className="overflow-x-auto rounded-xl border dark:border-white/5">
+                                  <table className="w-full text-right text-[11px] min-w-[800px]">
+                                      <thead className="bg-slate-50 dark:bg-white/5 font-black text-slate-500">
+                                          <tr>
+                                              <th className="px-4 py-3">التاريخ</th>
+                                              <th className="px-4 py-3">العميل</th>
+                                              <th className="px-4 py-3">الشبكة</th>
+                                              <th className="px-4 py-3">الفئة</th>
+                                              <th className="px-4 py-3">المبلغ</th>
+                                              <th className="px-4 py-3">ربح النظام</th>
+                                              <th className="px-4 py-3">عمولة الوكيل</th>
+                                              <th className="px-4 py-3">الحالة</th>
                                           </tr>
-                                      ))}
-                                  </tbody>
-                              </table>
+                                      </thead>
+                                      <tbody className="divide-y dark:divide-white/5">
+                                          {reportData.sales.map((o: Order) => (
+                                              <tr key={o.id} className="hover:bg-slate-50 dark:hover:bg-white/5">
+                                                  <td className="px-4 py-3 font-mono opacity-60">{new Date(o.createdAt).toLocaleString('ar-YE')}</td>
+                                                  <td className="px-4 py-3 font-bold">{o.userName}</td>
+                                                  <td className="px-4 py-3">{o.networkName}</td>
+                                                  <td className="px-4 py-3">{o.categoryName}</td>
+                                                  <td className="px-4 py-3 font-black text-indigo-600">{o.pointsUsed} ن</td>
+                                                  <td className="px-4 py-3 font-bold text-emerald-600">{o.masterProfit.toFixed(2)} ن</td>
+                                                  <td className="px-4 py-3 font-bold text-amber-600">{o.agentEarnings.toFixed(2)} ن</td>
+                                                  <td className="px-4 py-3"><span className="px-2 py-1 bg-emerald-100 text-emerald-700 rounded-full text-[9px] font-black">مكتمل</span></td>
+                                              </tr>
+                                          ))}
+                                      </tbody>
+                                  </table>
+                              </div>
                           </div>
                       )}
 
-                      {reportTab === 'agents_perf' && (
-                          <div className="space-y-8">
-                              {/* Global Agents Summary */}
-                              <div className="grid grid-cols-1 md:grid-cols-4 gap-4 mb-8">
-                                  <div className="p-5 bg-indigo-600 text-white rounded-[2rem] shadow-xl relative overflow-hidden">
-                                      <div className="absolute -right-4 -top-4 w-24 h-24 bg-white opacity-10 rounded-full"></div>
-                                      <p className="text-[10px] font-bold opacity-80 mb-1 uppercase tracking-widest">إجمالي مبيعات الشبكات</p>
-                                      <h4 className="text-2xl font-black">{orders.reduce((acc, o) => acc + o.pointsUsed, 0).toLocaleString()} ن</h4>
+                      {(reportTab === 'all' || reportTab === 'shipping') && (
+                          <div className="space-y-6">
+                              {reportTab === 'all' && <h3 className="font-black text-lg border-b pb-2">💳 تقارير الشحن</h3>}
+                              <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mb-6">
+                                  <div className="p-4 bg-indigo-50 dark:bg-indigo-900/20 rounded-2xl border border-indigo-100 dark:border-indigo-900/30">
+                                      <p className="text-[10px] font-black text-indigo-600 uppercase tracking-widest">إجمالي الشحن المقبول</p>
+                                      <p className="text-2xl font-black">{reportData.shipping.filter(r => r.status === Status.COMPLETED).reduce((acc, r) => acc + (r as PointRequest).amount, 0).toLocaleString()} ن</p>
                                   </div>
-                                  <div className="p-5 bg-emerald-600 text-white rounded-[2rem] shadow-xl relative overflow-hidden">
-                                      <div className="absolute -right-4 -top-4 w-24 h-24 bg-white opacity-10 rounded-full"></div>
-                                      <p className="text-[10px] font-bold opacity-80 mb-1 uppercase tracking-widest">إجمالي ربح النظام</p>
-                                      <h4 className="text-2xl font-black">{orders.reduce((acc, o) => acc + o.masterProfit, 0).toFixed(1)} ن</h4>
-                                  </div>
-                                  <div className="p-5 bg-amber-600 text-white rounded-[2rem] shadow-xl relative overflow-hidden">
-                                      <div className="absolute -right-4 -top-4 w-24 h-24 bg-white opacity-10 rounded-full"></div>
-                                      <p className="text-[10px] font-bold opacity-80 mb-1 uppercase tracking-widest">إجمالي أرباح الوكلاء</p>
-                                      <h4 className="text-2xl font-black">{orders.reduce((acc, o) => acc + o.agentEarnings, 0).toFixed(1)} ن</h4>
-                                  </div>
-                                  <div className="p-5 bg-slate-800 text-white rounded-[2rem] shadow-xl relative overflow-hidden">
-                                      <div className="absolute -right-4 -top-4 w-24 h-24 bg-white opacity-10 rounded-full"></div>
-                                      <p className="text-[10px] font-bold opacity-80 mb-1 uppercase tracking-widest">عدد الوكلاء النشطين</p>
-                                      <h4 className="text-2xl font-black">{users.filter(u => u.role === UserRole.AGENT && u.isActive).length}</h4>
+                                  <div className="p-4 bg-amber-50 dark:bg-amber-900/20 rounded-2xl border border-amber-100 dark:border-amber-900/30">
+                                      <p className="text-[10px] font-black text-amber-600 uppercase tracking-widest">طلبات قيد الانتظار</p>
+                                      <p className="text-2xl font-black">{reportData.shipping.filter(r => r.status === Status.PENDING).length} طلب</p>
                                   </div>
                               </div>
 
-                              {(filteredReportData as Agent[]).map(agent => {
-                                  // --- Per Agent Calculations ---
-                                  const agentOrders = orders.filter(o => o.agentId === agent.id);
-                                  const agentCats = categories.filter(c => c.agentId === agent.id);
-                                  const availCards = allCards.filter(c => c.agentId === agent.id && c.status === CardStatus.AVAILABLE).length;
-                                  const soldCards = allCards.filter(c => c.agentId === agent.id && c.status === CardStatus.SOLD).length;
-                                  
-                                  // Financials
-                                  const totalSalesPoints = agentOrders.reduce((acc, o) => acc + o.pointsUsed, 0);
-                                  const totalMasterProfit = agentOrders.reduce((acc, o) => acc + o.masterProfit, 0);
-                                  const totalAgentEarnings = agentOrders.reduce((acc, o) => acc + o.agentEarnings, 0);
+                              <div className="overflow-x-auto rounded-xl border dark:border-white/5">
+                                  <table className="w-full text-right text-[11px] min-w-[800px]">
+                                      <thead className="bg-slate-50 dark:bg-white/5 font-black text-slate-500">
+                                          <tr>
+                                              <th className="px-4 py-3">التاريخ</th>
+                                              <th className="px-4 py-3">المستخدم</th>
+                                              <th className="px-4 py-3">المبلغ</th>
+                                              <th className="px-4 py-3">الطريقة</th>
+                                              <th className="px-4 py-3">المرجع</th>
+                                              <th className="px-4 py-3">الحالة</th>
+                                          </tr>
+                                      </thead>
+                                      <tbody className="divide-y dark:divide-white/5">
+                                          {reportData.shipping.map((r: PointRequest) => (
+                                              <tr key={r.id} className="hover:bg-slate-50 dark:hover:bg-white/5">
+                                                  <td className="px-4 py-3 font-mono opacity-60">{new Date(r.createdAt).toLocaleString('ar-YE')}</td>
+                                                  <td className="px-4 py-3 font-bold">{r.userName}</td>
+                                                  <td className="px-4 py-3 font-black text-indigo-600">{r.amount} ن</td>
+                                                  <td className="px-4 py-3">{r.paymentMethod}</td>
+                                                  <td className="px-4 py-3 font-mono">{r.referenceNumber}</td>
+                                                  <td className="px-4 py-3">
+                                                      <span className={cn("px-2 py-1 rounded-full text-[9px] font-black", 
+                                                          r.status === Status.COMPLETED ? "bg-emerald-100 text-emerald-700" : 
+                                                          r.status === Status.PENDING ? "bg-blue-100 text-blue-700" : "bg-rose-100 text-rose-700")}>
+                                                          {r.status}
+                                                      </span>
+                                                  </td>
+                                              </tr>
+                                          ))}
+                                      </tbody>
+                                  </table>
+                              </div>
+                          </div>
+                      )}
 
-                                  // Apply Offset Logic for Reset
-                                  const reportKey = `agent_report_${agent.id}`;
-                                  const offsetSalesPoints = statOffsets[`${reportKey}_sales`] || 0;
-                                  const offsetProfit = statOffsets[`${reportKey}_profit`] || 0;
-                                  const offsetEarnings = statOffsets[`${reportKey}_earnings`] || 0;
-                                  const offsetOrders = statOffsets[`${reportKey}_orders`] || 0;
+                      {(reportTab === 'all' || reportTab === 'users') && (
+                          <div className="space-y-6">
+                              {reportTab === 'all' && <h3 className="font-black text-lg border-b pb-2">👥 المستخدمين الجدد</h3>}
+                              <div className="overflow-x-auto rounded-xl border dark:border-white/5">
+                                  <table className="w-full text-right text-[11px] min-w-[800px]">
+                                      <thead className="bg-slate-50 dark:bg-white/5 font-black text-slate-500">
+                                          <tr>
+                                              <th className="px-4 py-3">تاريخ التسجيل</th>
+                                              <th className="px-4 py-3">الاسم</th>
+                                              <th className="px-4 py-3">الهاتف</th>
+                                              <th className="px-4 py-3">الرصيد</th>
+                                              <th className="px-4 py-3">الحالة</th>
+                                          </tr>
+                                      </thead>
+                                      <tbody className="divide-y dark:divide-white/5">
+                                          {reportData.newUsers.map((u: User) => (
+                                              <tr key={u.id} className="hover:bg-slate-50 dark:hover:bg-white/5">
+                                                  <td className="px-4 py-3 font-mono opacity-60">{new Date(u.createdAt).toLocaleDateString('ar-YE')}</td>
+                                                  <td className="px-4 py-3 font-bold">{u.fullName}</td>
+                                                  <td className="px-4 py-3">{u.phone}</td>
+                                                  <td className="px-4 py-3 font-black text-indigo-600">{u.pointsBalance} ن</td>
+                                                  <td className="px-4 py-3">
+                                                      <span className={cn("px-2 py-1 rounded-full text-[9px] font-black", 
+                                                          u.isActive ? "bg-emerald-100 text-emerald-700" : "bg-rose-100 text-rose-700")}>
+                                                          {u.isActive ? 'نشط' : 'موقف'}
+                                                      </span>
+                                                  </td>
+                                              </tr>
+                                          ))}
+                                      </tbody>
+                                  </table>
+                              </div>
+                          </div>
+                      )}
 
-                                  const displaySalesPoints = Math.max(0, totalSalesPoints - offsetSalesPoints);
-                                  const displayProfit = Math.max(0, totalMasterProfit - offsetProfit);
-                                  const displayEarnings = Math.max(0, totalAgentEarnings - offsetEarnings);
-                                  // We can simulate order reset by filtering out old ones if we tracked reset date, 
-                                  // but here we just zero the totals for the visual report as requested.
-
-                                  return (
-                                      <div key={agent.id} className="border border-slate-200 dark:border-white/10 rounded-[2rem] p-6 bg-slate-50/50 dark:bg-white/5">
-                                          {/* Agent Report Header */}
-                                          <div className="flex justify-between items-center mb-6 border-b border-slate-200 dark:border-white/10 pb-4">
-                                              <div className="flex items-center gap-4">
-                                                  <div className="w-12 h-12 bg-indigo-600 rounded-2xl flex items-center justify-center text-white text-xl">📡</div>
-                                                  <div>
-                                                      <h3 className="font-black text-lg">{agent.networkName}</h3>
-                                                      <p className="text-xs text-slate-500 font-bold">{agent.fullName}</p>
-                                                  </div>
-                                              </div>
-                                              <button 
-                                                  onClick={() => setConfirmModal({
-                                                      isOpen: true, title: 'تصفير تقرير الوكيل', message: 'هل أنت متأكد من تصفير إحصائيات هذا التقرير؟ (إجراء للعرض فقط)', type: 'info',
-                                                      action: () => {
-                                                          StorageService.setStatOffset(`${reportKey}_sales`, totalSalesPoints);
-                                                          StorageService.setStatOffset(`${reportKey}_profit`, totalMasterProfit);
-                                                          StorageService.setStatOffset(`${reportKey}_earnings`, totalAgentEarnings);
-                                                          StorageService.logAction('تصفير تقرير', `تصفير تقرير الوكيل ${agent.networkName}`, currentUser.fullName, 'RESET');
-                                                          refreshData(); showNotification('تم تصفير التقرير ✅'); setConfirmModal({...confirmModal, isOpen:false});
-                                                      }
-                                                  })} 
-                                                  className="p-3 bg-slate-200 dark:bg-white/10 rounded-xl hover:bg-indigo-600 hover:text-white transition-colors" title="تصفير التقرير"
-                                              >
-                                                  🔄
-                                              </button>
-                                          </div>
-
-                                          {/* Top Stats */}
-                                          <div className="grid grid-cols-3 gap-4 mb-6">
-                                              <div className="bg-white dark:bg-slate-900 p-4 rounded-xl text-center shadow-sm">
-                                                  <span className="block text-[10px] text-slate-400 font-black mb-1">الفئات</span>
-                                                  <span className="font-black text-lg">{agentCats.length}</span>
-                                              </div>
-                                              <div className="bg-emerald-50 dark:bg-emerald-900/20 p-4 rounded-xl text-center shadow-sm border border-emerald-100 dark:border-emerald-900/30">
-                                                  <span className="block text-[10px] text-emerald-600 font-black mb-1">كروت متاحة</span>
-                                                  <span className="font-black text-lg text-emerald-700 dark:text-emerald-400">{availCards}</span>
-                                              </div>
-                                              <div className="bg-amber-50 dark:bg-amber-900/20 p-4 rounded-xl text-center shadow-sm border border-amber-100 dark:border-amber-900/30">
-                                                  <span className="block text-[10px] text-amber-600 font-black mb-1">كروت مباعة</span>
-                                                  <span className="font-black text-lg text-amber-700 dark:text-amber-400">{soldCards}</span>
-                                              </div>
-                                          </div>
-
-                                          {/* Transaction Table */}
-                                          <div className="overflow-x-auto rounded-xl border border-slate-200 dark:border-white/10 mb-6 bg-white dark:bg-slate-900">
-                                              <table className="w-full text-right text-[10px]">
-                                                  <thead className="bg-slate-100 dark:bg-white/5 font-black text-slate-500">
-                                                      <tr><th className="p-3">المستخدم</th><th className="p-3">التاريخ</th><th className="p-3">العدد</th><th className="p-3">الفئة</th></tr>
-                                                  </thead>
-                                                  <tbody className="divide-y divide-slate-100 dark:divide-white/5 font-bold">
-                                                      {agentOrders.slice(0, 10).map(o => (
-                                                          <tr key={o.id}>
-                                                              <td className="p-3">{o.userName}</td>
-                                                              <td className="p-3 opacity-60" dir="ltr">{new Date(o.createdAt).toLocaleString('ar-YE')}</td>
-                                                              <td className="p-3">1</td>
-                                                              <td className="p-3">{o.categoryName}</td>
-                                                          </tr>
-                                                      ))}
-                                                      {agentOrders.length === 0 && <tr><td colSpan={4} className="p-4 text-center text-slate-400">لا توجد مبيعات</td></tr>}
-                                                  </tbody>
-                                              </table>
-                                          </div>
-
-                                          {/* Financial Footer */}
-                                          <div className="grid grid-cols-2 md:grid-cols-4 gap-2 text-center bg-slate-100 dark:bg-white/5 p-4 rounded-xl">
-                                              <div>
-                                                  <p className="text-[9px] text-slate-500 font-black">إجمالي المبيعات</p>
-                                                  <p className="font-black text-sm">{displaySalesPoints.toLocaleString()} ن</p>
-                                              </div>
-                                              <div>
-                                                  <p className="text-[9px] text-slate-500 font-black">عدد العمليات</p>
-                                                  <p className="font-black text-sm">{agentOrders.length}</p>
-                                              </div>
-                                              <div>
-                                                  <p className="text-[9px] text-slate-500 font-black">ربح النظام ({agent.profitPercentage}%)</p>
-                                                  <p className="font-black text-sm text-indigo-600">{displayProfit.toFixed(1)} ن</p>
-                                              </div>
-                                              <div className="bg-emerald-100 dark:bg-emerald-900/30 rounded-lg py-1">
-                                                  <p className="text-[9px] text-emerald-700 font-black">ربح الوكيل</p>
-                                                  <p className="font-black text-sm text-emerald-800 dark:text-emerald-400">{displayEarnings.toFixed(1)} ن</p>
-                                              </div>
-                                          </div>
+                      {(reportTab === 'all' || reportTab === 'agents_perf') && (
+                          <div className="space-y-6">
+                              {(reportTab === 'all' || reportTab === 'agents_perf') && (
+                                  <div className="flex flex-col sm:flex-row justify-between items-center gap-4">
+                                      {reportTab === 'all' && <h3 className="font-black text-lg border-b pb-2 flex-1">📡 أداء الوكلاء</h3>}
+                                      <div className="relative w-full sm:w-64">
+                                          <Icons.Search className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-400" size={14} />
+                                          <input 
+                                              type="text" 
+                                              placeholder="بحث باسم الوكيل أو الشبكة..." 
+                                              value={agentPerfSearch}
+                                              onChange={(e) => setAgentPerfSearch(e.target.value)}
+                                              className="w-full pr-9 pl-3 py-2 bg-slate-50 dark:bg-white/5 border border-slate-200 dark:border-white/10 rounded-lg text-[10px] font-bold outline-none focus:border-indigo-500"
+                                          />
                                       </div>
-                                  );
-                              })}
+                                  </div>
+                              )}
+                              <div className="overflow-x-auto rounded-xl border dark:border-white/5">
+                                  <table className="w-full text-right text-[11px] min-w-[800px]">
+                                      <thead className="bg-slate-50 dark:bg-white/5 font-black text-slate-500">
+                                          <tr>
+                                              <th className="px-4 py-3">الوكيل</th>
+                                              <th className="px-4 py-3">الشبكة</th>
+                                              <th className="px-4 py-3">إجمالي المبيعات</th>
+                                              <th className="px-4 py-3">أرباح الوكيل</th>
+                                              <th className="px-4 py-3">أرباح النظام</th>
+                                              <th className="px-4 py-3">الحالة</th>
+                                          </tr>
+                                      </thead>
+                                      <tbody className="divide-y dark:divide-white/5">
+                                          {reportData.agentsPerf.map((u: User) => {
+                                              const agent = u as Agent;
+                                              const agentOrders = orders.filter(o => o.agentId === u.id);
+                                              const totalSales = agentOrders.reduce((acc, o) => acc + o.pointsUsed, 0);
+                                              const totalEarnings = agentOrders.reduce((acc, o) => acc + o.agentEarnings, 0);
+                                              const totalProfit = agentOrders.reduce((acc, o) => acc + o.masterProfit, 0);
+                                              
+                                              return (
+                                                  <tr key={u.id} className="hover:bg-slate-50 dark:hover:bg-white/5">
+                                                      <td className="px-4 py-3 font-bold">{u.fullName}</td>
+                                                      <td className="px-4 py-3">{agent.networkName}</td>
+                                                      <td className="px-4 py-3 font-black text-indigo-600">{totalSales.toLocaleString()} ن</td>
+                                                      <td className="px-4 py-3 font-bold text-amber-600">{totalEarnings.toFixed(2)} ن</td>
+                                                      <td className="px-4 py-3 font-bold text-emerald-600">{totalProfit.toFixed(2)} ن</td>
+                                                      <td className="px-4 py-3">
+                                                          <span className={cn("px-2 py-1 rounded-full text-[9px] font-black", 
+                                                              u.isActive ? "bg-emerald-100 text-emerald-700" : "bg-rose-100 text-rose-700")}>
+                                                              {u.isActive ? 'نشط' : 'موقف'}
+                                                          </span>
+                                                      </td>
+                                                  </tr>
+                                              );
+                                          })}
+                                      </tbody>
+                                  </table>
+                              </div>
                           </div>
                       )}
                   </div>
@@ -1402,97 +1700,192 @@ const AdminDashboard: React.FC<{ currentUser: User }> = ({ currentUser }) => {
               <div className="space-y-6 animate-in slide-in-from-bottom-4">
                   <SectionHeader title="مراقبة المستخدمين والنشاط" subtitle="متابعة عمليات الدخول، المشتريات، وإدارة الحظر" />
                   
-                  <div className="grid grid-cols-1 gap-6">
-                      {users.filter(u => u.role === UserRole.USER).map(user => {
-                          const userOrders = orders.filter(o => o.userId === user.id);
-                          const userLogins = systemLogs.filter(l => l.performedBy === user.fullName && l.action === 'تسجيل دخول');
-                          
-                          // Calculate purchase stats
-                          const purchaseStats = userOrders.reduce((acc, o) => {
-                              acc.total += 1;
-                              acc.categories.add(o.categoryName);
-                              acc.networks.add(o.networkName);
-                              return acc;
-                          }, { total: 0, categories: new Set<string>(), networks: new Set<string>() });
+                  {/* Quick Stats Indicators */}
+                  <div className="grid grid-cols-1 sm:grid-cols-3 gap-4 mb-6">
+                      <div className="glass-card p-4 rounded-2xl border border-slate-200 dark:border-white/5 flex items-center gap-4">
+                          <div className="w-12 h-12 bg-indigo-50 text-indigo-600 rounded-xl flex items-center justify-center text-xl">👥</div>
+                          <div>
+                              <p className="text-[10px] font-black text-slate-400 uppercase">إجمالي المستخدمين</p>
+                              <p className="text-xl font-black">{users.filter(u => u.role === UserRole.USER).length}</p>
+                          </div>
+                      </div>
+                      <div className="glass-card p-4 rounded-2xl border border-slate-200 dark:border-white/5 flex items-center gap-4">
+                          <div className="w-12 h-12 bg-emerald-50 text-emerald-600 rounded-xl flex items-center justify-center text-xl">✅</div>
+                          <div>
+                              <p className="text-[10px] font-black text-slate-400 uppercase">المستخدمين النشطين</p>
+                              <p className="text-xl font-black">{users.filter(u => u.role === UserRole.USER && u.isActive).length}</p>
+                          </div>
+                      </div>
+                      <div className="glass-card p-4 rounded-2xl border border-slate-200 dark:border-white/5 flex items-center gap-4">
+                          <div className="w-12 h-12 bg-rose-50 text-rose-600 rounded-xl flex items-center justify-center text-xl">🚫</div>
+                          <div>
+                              <p className="text-[10px] font-black text-slate-400 uppercase">المستخدمين المحظورين</p>
+                              <p className="text-xl font-black">{users.filter(u => u.role === UserRole.USER && !u.isActive).length}</p>
+                          </div>
+                      </div>
+                  </div>
 
-                          return (
-                              <div key={user.id} className="glass-card p-6 rounded-[2rem] border border-slate-200 dark:border-white/5 hover:shadow-xl transition-all duration-300">
-                                  <div className="flex flex-col md:flex-row justify-between gap-6">
-                                      {/* User Info & Status */}
-                                      <div className="flex items-start gap-4 flex-1">
-                                          <div className={`w-14 h-14 rounded-2xl flex items-center justify-center text-2xl shadow-inner ${user.isActive ? 'bg-emerald-50 text-emerald-600' : 'bg-rose-50 text-rose-600'}`}>
-                                              {user.isActive ? '👤' : '🚫'}
-                                          </div>
-                                          <div className="space-y-1">
-                                              <h3 className="font-black text-lg text-slate-800 dark:text-white">{user.fullName}</h3>
-                                              <p className="text-xs text-slate-500 font-bold">{user.phone || user.email}</p>
-                                              <div className="flex gap-2 mt-2">
-                                                  <span className={`px-3 py-1 rounded-full text-[10px] font-black border ${user.isActive ? 'bg-emerald-50 text-emerald-600 border-emerald-100' : 'bg-rose-50 text-rose-600 border-rose-100'}`}>
-                                                      {user.isActive ? 'حساب نشط' : 'حساب محظور'}
-                                                  </span>
-                                                  <span className="px-3 py-1 rounded-full text-[10px] font-black bg-indigo-50 text-indigo-600 border border-indigo-100">
-                                                      رصيد: {user.pointsBalance} ن
-                                                  </span>
-                                              </div>
-                                          </div>
-                                      </div>
-
-                                      {/* Purchase Summary */}
-                                      <div className="flex-1 grid grid-cols-3 gap-2">
-                                          <div className="p-3 bg-slate-50 dark:bg-white/5 rounded-xl text-center">
-                                              <p className="text-[9px] text-slate-400 font-black mb-1">إجمالي الكروت</p>
-                                              <p className="font-black text-sm text-indigo-600">{purchaseStats.total}</p>
-                                          </div>
-                                          <div className="p-3 bg-slate-50 dark:bg-white/5 rounded-xl text-center">
-                                              <p className="text-[9px] text-slate-400 font-black mb-1">الفئات</p>
-                                              <p className="font-black text-[10px] truncate" title={Array.from(purchaseStats.categories).join(', ')}>
-                                                  {purchaseStats.categories.size > 0 ? Array.from(purchaseStats.categories).join(', ') : '-'}
-                                              </p>
-                                          </div>
-                                          <div className="p-3 bg-slate-50 dark:bg-white/5 rounded-xl text-center">
-                                              <p className="text-[9px] text-slate-400 font-black mb-1">الشبكات</p>
-                                              <p className="font-black text-[10px] truncate" title={Array.from(purchaseStats.networks).join(', ')}>
-                                                  {purchaseStats.networks.size > 0 ? Array.from(purchaseStats.networks).join(', ') : '-'}
-                                              </p>
-                                          </div>
-                                      </div>
-
-                                      {/* Actions */}
-                                      <div className="flex flex-col gap-2 justify-center">
-                                          <button 
-                                              onClick={() => handleToggleAgent(user)} 
-                                              className={`px-6 py-2 rounded-xl font-black text-xs transition-all shadow-sm ${user.isActive ? 'bg-rose-50 text-rose-600 hover:bg-rose-600 hover:text-white' : 'bg-emerald-50 text-emerald-600 hover:bg-emerald-600 hover:text-white'}`}
-                                          >
-                                              {user.isActive ? 'حظر المستخدم 🚫' : 'إلغاء الحظر ✅'}
-                                          </button>
-                                          <button 
-                                              onClick={() => setViewModal({ isOpen: true, title: `سجل نشاط: ${user.fullName}`, data: user, type: 'مراقبة_مستخدم' })}
-                                              className="px-6 py-2 bg-slate-100 dark:bg-white/10 rounded-xl font-black text-xs hover:bg-slate-200 transition-all"
-                                          >
-                                              عرض السجل التفصيلي 📜
-                                          </button>
-                                      </div>
-                                  </div>
-
-                                  {/* Recent Logins Preview */}
-                                  <div className="mt-6 pt-4 border-t border-slate-100 dark:border-white/5">
-                                      <h4 className="text-[10px] font-black text-slate-400 uppercase tracking-widest mb-3">آخر عمليات تسجيل الدخول</h4>
-                                      <div className="flex gap-3 overflow-x-auto no-scrollbar">
-                                          {userLogins.length > 0 ? userLogins.slice(0, 5).map(login => (
-                                              <div key={login.id} className="flex-shrink-0 px-3 py-2 bg-indigo-50/50 dark:bg-indigo-900/20 rounded-lg border border-indigo-100 dark:border-indigo-900/30 text-[10px] font-bold">
-                                                  <span className="text-indigo-600 ml-2">🕒</span>
-                                                  {new Date(login.timestamp).toLocaleString('ar-YE')}
-                                              </div>
-                                          )) : (
-                                              <p className="text-[10px] text-slate-400 italic">لا توجد سجلات دخول مسجلة حالياً</p>
-                                          )}
-                                      </div>
-                                  </div>
+                  {/* Advanced Filters & Search */}
+                  <div className="glass-card p-6 rounded-[2rem] border border-slate-200 dark:border-white/5 space-y-4">
+                      <div className="flex flex-col lg:flex-row gap-4">
+                          <div className="relative flex-1 group">
+                              <Icons.Search className="absolute right-4 top-1/2 -translate-y-1/2 text-slate-400 group-focus-within:text-indigo-600 transition-colors" size={18} />
+                              <input 
+                                  type="text" 
+                                  placeholder="بحث بالاسم، رقم الهاتف، أو البريد الإلكتروني..." 
+                                  value={monitoringSearch}
+                                  onChange={(e) => setMonitoringSearch(e.target.value)}
+                                  className="w-full pr-12 pl-4 py-3 bg-slate-50 dark:bg-slate-900 border border-slate-200 dark:border-white/10 rounded-2xl font-bold text-xs outline-none focus:border-indigo-500 shadow-sm transition-all"
+                              />
+                          </div>
+                          <div className="flex flex-wrap gap-2">
+                              <select 
+                                  value={monitoringRoleFilter}
+                                  onChange={(e) => setMonitoringRoleFilter(e.target.value as any)}
+                                  className="px-4 py-3 bg-slate-50 dark:bg-slate-900 border border-slate-200 dark:border-white/10 rounded-2xl font-bold text-[10px] outline-none focus:border-indigo-500"
+                              >
+                                  <option value="ALL">كل الأدوار</option>
+                                  <option value="USER">مستخدم</option>
+                                  <option value="AGENT">وكيل</option>
+                                  <option value="MANAGER">مدير</option>
+                              </select>
+                              <select 
+                                  value={monitoringStatusFilter}
+                                  onChange={(e) => setMonitoringStatusFilter(e.target.value as any)}
+                                  className="px-4 py-3 bg-slate-50 dark:bg-slate-900 border border-slate-200 dark:border-white/10 rounded-2xl font-bold text-[10px] outline-none focus:border-indigo-500"
+                              >
+                                  <option value="ALL">كل الحالات</option>
+                                  <option value="ACTIVE">نشط</option>
+                                  <option value="BLOCKED">محظور</option>
+                              </select>
+                              <div className="flex items-center gap-2 bg-slate-50 dark:bg-slate-900 border border-slate-200 dark:border-white/10 rounded-2xl px-4 py-1">
+                                  <span className="text-[9px] font-black text-slate-400">من:</span>
+                                  <input type="date" value={monitoringDateRange.start} onChange={e => setMonitoringDateRange({...monitoringDateRange, start: e.target.value})} className="bg-transparent text-[10px] font-bold outline-none" />
+                                  <span className="text-[9px] font-black text-slate-400">إلى:</span>
+                                  <input type="date" value={monitoringDateRange.end} onChange={e => setMonitoringDateRange({...monitoringDateRange, end: e.target.value})} className="bg-transparent text-[10px] font-bold outline-none" />
                               </div>
-                          );
-                      })}
-                      {users.filter(u => u.role === UserRole.USER).length === 0 && (
-                          <div className="p-12 text-center text-slate-400 font-bold">لا يوجد مستخدمين مسجلين حالياً</div>
+                          </div>
+                      </div>
+                  </div>
+
+                  {/* Users Table */}
+                  <div className="glass-card rounded-[2rem] border border-slate-200 dark:border-white/5 overflow-hidden shadow-sm">
+                      <div className="overflow-x-auto">
+                          <table className="w-full text-right">
+                              <thead className="bg-slate-50 dark:bg-white/5 border-b border-slate-100 dark:border-white/10 text-[10px] font-black text-slate-500 uppercase tracking-widest">
+                                  <tr>
+                                      <th className="px-3 py-2">المستخدم</th>
+                                      <th className="px-3 py-2">رقم الهاتف / البريد</th>
+                                      <th className="px-3 py-2">الرصيد</th>
+                                      <th className="px-3 py-2">الحالة</th>
+                                      <th className="px-3 py-2">آخر ظهور</th>
+                                      <th className="px-3 py-2 text-center">إجراءات</th>
+                                  </tr>
+                              </thead>
+                              <tbody className="divide-y divide-slate-100 dark:divide-white/5">
+                                  {users.filter(u => {
+                                      // Role Filter
+                                      if (monitoringRoleFilter !== 'ALL' && u.role !== monitoringRoleFilter) return false;
+                                      
+                                      // Status Filter
+                                      if (monitoringStatusFilter === 'ACTIVE' && !u.isActive) return false;
+                                      if (monitoringStatusFilter === 'BLOCKED' && u.isActive) return false;
+
+                                      // Search Filter
+                                      if (debouncedMonitoringSearch) {
+                                          const s = debouncedMonitoringSearch.toLowerCase();
+                                          return u.fullName.toLowerCase().includes(s) || 
+                                                 u.phone.includes(s) || 
+                                                 (u.email && u.email.toLowerCase().includes(s));
+                                      }
+
+                                      // Date Filter (Registration Date - assuming createdAt exists on user)
+                                      if (monitoringDateRange.start || monitoringDateRange.end) {
+                                          const regDate = u.createdAt ? new Date(u.createdAt) : new Date();
+                                          if (monitoringDateRange.start && regDate < new Date(monitoringDateRange.start)) return false;
+                                          if (monitoringDateRange.end && regDate > new Date(monitoringDateRange.end)) return false;
+                                      }
+
+                                      return true;
+                                  }).map(user => {
+                                      const userLogins = systemLogs.filter(l => l.performedBy === user.fullName && l.action === 'تسجيل دخول');
+                                      const lastLogin = userLogins.length > 0 ? userLogins[0] : null;
+                                      
+                                      return (
+                                          <tr key={user.id} className="hover:bg-slate-50/50 dark:hover:bg-white/5 transition-colors group">
+                                              <td className="px-6 py-4">
+                                                  <div className="flex items-center gap-3">
+                                                      <div className={`w-8 h-8 rounded-lg flex items-center justify-center text-sm ${user.isActive ? 'bg-emerald-50 text-emerald-600' : 'bg-rose-50 text-rose-600'}`}>
+                                                          {user.isActive ? '👤' : '🚫'}
+                                                      </div>
+                                                      <div>
+                                                          <p className="font-black text-xs text-slate-800 dark:text-white">{user.fullName}</p>
+                                                          <p className="text-[9px] font-bold text-slate-400">{user.role === UserRole.USER ? 'مستخدم' : user.role === UserRole.AGENT ? 'وكيل' : 'مدير'}</p>
+                                                      </div>
+                                                  </div>
+                                              </td>
+                                              <td className="px-6 py-4">
+                                                  <p className="text-[10px] font-bold text-slate-600 dark:text-slate-300">{user.phone}</p>
+                                                  {user.email && <p className="text-[9px] text-slate-400">{user.email}</p>}
+                                              </td>
+                                              <td className="px-6 py-4">
+                                                  <span className="text-[10px] font-black text-indigo-600 bg-indigo-50 px-2 py-1 rounded-lg">
+                                                      {user.pointsBalance.toLocaleString()} ن
+                                                  </span>
+                                              </td>
+                                              <td className="px-6 py-4">
+                                                  <span className={`px-2 py-1 rounded-lg text-[9px] font-black ${user.isActive ? 'bg-emerald-50 text-emerald-600' : 'bg-rose-50 text-rose-600'}`}>
+                                                      {user.isActive ? 'نشط' : 'محظور'}
+                                                  </span>
+                                              </td>
+                                              <td className="px-6 py-4">
+                                                  <p className="text-[9px] font-bold text-slate-500">
+                                                      {lastLogin ? new Date(lastLogin.timestamp).toLocaleString('ar-YE') : 'لا يوجد سجل'}
+                                                  </p>
+                                              </td>
+                                              <td className="px-6 py-4">
+                                                  <div className="flex items-center justify-center gap-2">
+                                                      <button 
+                                                          onClick={() => handleEditUser(user)}
+                                                          className="p-2 bg-indigo-50 text-indigo-600 rounded-lg hover:bg-indigo-600 hover:text-white transition-all"
+                                                          title="تعديل"
+                                                      >
+                                                          <Icons.Edit2 size={14} />
+                                                      </button>
+                                                      <button 
+                                                          onClick={() => handleToggleAgent(user)}
+                                                          className={`p-2 rounded-lg transition-all ${user.isActive ? 'bg-rose-50 text-rose-600 hover:bg-rose-600 hover:text-white' : 'bg-emerald-50 text-emerald-600 hover:bg-emerald-600 hover:text-white'}`}
+                                                          title={user.isActive ? 'حظر' : 'إلغاء الحظر'}
+                                                      >
+                                                          {user.isActive ? <Icons.UserX size={14} /> : <Icons.UserCheck size={14} />}
+                                                      </button>
+                                                      <button 
+                                                          onClick={() => setViewModal({ isOpen: true, title: `سجل نشاط: ${user.fullName}`, data: user, type: 'مراقبة_مستخدم' })}
+                                                          className="p-2 bg-slate-800 text-white rounded-lg hover:bg-slate-700 transition-all"
+                                                          title="سجل النشاط"
+                                                      >
+                                                          <Icons.Activity size={14} />
+                                                      </button>
+                                                      <button 
+                                                          onClick={() => handleDeleteUser(user)}
+                                                          className="p-2 bg-rose-50 text-rose-600 rounded-lg hover:bg-rose-600 hover:text-white transition-all"
+                                                          title="حذف"
+                                                      >
+                                                          <Icons.Trash2 size={14} />
+                                                      </button>
+                                                  </div>
+                                              </td>
+                                          </tr>
+                                      );
+                                  })}
+                              </tbody>
+                          </table>
+                      </div>
+                      {users.length === 0 && (
+                          <div className="p-20 text-center">
+                              <div className="text-6xl mb-4">👥</div>
+                              <p className="text-slate-400 font-black text-lg">لا يوجد مستخدمين يطابقون الفلترة الحالية</p>
+                          </div>
                       )}
                   </div>
               </div>
@@ -1501,7 +1894,7 @@ const AdminDashboard: React.FC<{ currentUser: User }> = ({ currentUser }) => {
           {/* UPDATED AGENTS SECTION: Card Layout with Circular Buttons */}
           {activeSection === 'agents' && (
               <div className="space-y-6">
-                  <SectionHeader title="الوكلاء والشبكات" action={<button onClick={() => { setUserForm({ id: '', fullName: '', email: '', password: '', role: UserRole.AGENT, networkName: '', profitPercentage: 10, isActive: true }); setIsEditMode(false); setShowUserModal(true); }} className="px-6 py-2 bg-indigo-600 text-white rounded-lg font-bold text-xs">+ وكيل جديد</button>} />
+                  <SectionHeader title="الوكلاء والشبكات" action={<button onClick={() => { setUserForm({ id: '', fullName: '', phone: '', password: '', role: UserRole.AGENT, networkName: '', profitPercentage: 10, isActive: true }); setIsEditMode(false); setShowUserModal(true); }} className="px-6 py-2 bg-indigo-600 text-white rounded-lg font-bold text-xs">+ وكيل جديد</button>} />
                   <div className="grid grid-cols-1 gap-4">
                       {users.filter(u=>u.role===UserRole.AGENT).map(u => (
                           <div key={u.id} className="glass-card p-6 rounded-[2.5rem] flex flex-col md:flex-row justify-between items-center gap-6 group hover:border-indigo-200 transition-all duration-300">
@@ -1512,7 +1905,7 @@ const AdminDashboard: React.FC<{ currentUser: User }> = ({ currentUser }) => {
                                       <h3 className="text-lg font-black text-slate-800 dark:text-white leading-tight mb-1">{(u as Agent).networkName}</h3>
                                       <p className="text-xs text-slate-500 font-bold mb-1">{u.fullName}</p>
                                       <div className="flex items-center gap-2">
-                                          <span className="text-[9px] bg-slate-100 dark:bg-white/10 px-2 py-0.5 rounded-md text-slate-500">{u.phone || u.email}</span>
+                                          <span className="text-[9px] bg-slate-100 dark:bg-white/10 px-2 py-0.5 rounded-md text-slate-500">{u.phone}</span>
                                           <span className="text-[9px] bg-indigo-50 text-indigo-600 px-2 py-0.5 rounded-md font-bold border border-indigo-100">ربح النظام: {(u as Agent).profitPercentage}%</span>
                                       </div>
                                   </div>
@@ -1564,7 +1957,7 @@ const AdminDashboard: React.FC<{ currentUser: User }> = ({ currentUser }) => {
           {/* MANAGERS SECTION */}
           {activeSection === 'managers' && (
               <div className="space-y-6">
-                  <SectionHeader title="المدراء والمشرفين" subtitle="إدارة صلاحيات الوصول الإداري للنظام" action={<button onClick={() => { setUserForm({ id: '', fullName: '', email: '', password: '', role: UserRole.MANAGER, networkName: '', profitPercentage: 0, isActive: true }); setIsEditMode(false); setShowUserModal(true); }} className="px-6 py-2 bg-indigo-600 text-white rounded-lg font-bold text-xs">+ مدير جديد</button>} />
+                  <SectionHeader title="المدراء والمشرفين" subtitle="إدارة صلاحيات الوصول الإداري للنظام" action={<button onClick={() => { setUserForm({ id: '', fullName: '', phone: '', password: '', role: UserRole.MANAGER, networkName: '', profitPercentage: 0, isActive: true }); setIsEditMode(false); setShowUserModal(true); }} className="px-6 py-2 bg-indigo-600 text-white rounded-lg font-bold text-xs">+ مدير جديد</button>} />
                   <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
                       {users.filter(u => u.role === UserRole.MANAGER).map(u => (
                           <div key={u.id} className="glass-card p-6 rounded-[2rem] border relative overflow-hidden group">
@@ -1572,7 +1965,7 @@ const AdminDashboard: React.FC<{ currentUser: User }> = ({ currentUser }) => {
                               <div className="flex justify-between items-start mb-4">
                                   <div>
                                       <h3 className="font-black text-lg">{u.fullName}</h3>
-                                      <p className="text-xs text-slate-500">{u.phone || u.email}</p>
+                                      <p className="text-xs text-slate-500">{u.phone}</p>
                                   </div>
                                   <div className={`w-3 h-3 rounded-full ${u.isActive ? 'bg-emerald-500' : 'bg-rose-500'}`}></div>
                               </div>
@@ -1626,25 +2019,25 @@ const AdminDashboard: React.FC<{ currentUser: User }> = ({ currentUser }) => {
                       <div className="p-4 bg-slate-50 dark:bg-white/5 border-b font-bold text-sm">سجل العمليات المالية الأخيرة</div>
                       <table className="w-full text-right text-[10px]">
                           <thead className="bg-slate-100 dark:bg-white/10 font-black text-slate-500">
-                              <tr><th className="p-3">النوع</th><th className="p-3">المصدر</th><th className="p-3">المبلغ</th><th className="p-3">الربح/العمولة</th><th className="p-3">التاريخ</th></tr>
+                              <tr><th className="px-3 py-2">النوع</th><th className="px-3 py-2">المصدر</th><th className="px-3 py-2">المبلغ</th><th className="px-3 py-2">الربح/العمولة</th><th className="px-3 py-2">التاريخ</th></tr>
                           </thead>
                           <tbody className="divide-y divide-slate-100 dark:divide-white/5 font-bold">
                               {orders.slice(0, 5).map(o => (
                                   <tr key={o.id}>
-                                      <td className="p-3"><span className="text-emerald-600 bg-emerald-50 px-2 py-1 rounded">بيع كرت</span></td>
-                                      <td className="p-3">{o.networkName}</td>
-                                      <td className="p-3">{o.pointsUsed}</td>
-                                      <td className="p-3 text-emerald-600">+{o.masterProfit.toFixed(2)}</td>
-                                      <td className="p-3 opacity-60" dir="ltr">{new Date(o.createdAt).toLocaleDateString()}</td>
+                                      <td className="px-3 py-2"><span className="text-emerald-600 bg-emerald-50 px-2 py-1 rounded">بيع كرت</span></td>
+                                      <td className="px-3 py-2">{o.networkName}</td>
+                                      <td className="px-3 py-2">{o.pointsUsed}</td>
+                                      <td className="px-3 py-2 text-emerald-600">+{o.masterProfit.toFixed(2)}</td>
+                                      <td className="px-3 py-2 opacity-60" dir="ltr">{new Date(o.createdAt).toLocaleDateString()}</td>
                                   </tr>
                               ))}
                               {settlements.slice(0, 3).map(s => (
                                   <tr key={s.id}>
-                                      <td className="p-3"><span className="text-amber-600 bg-amber-50 px-2 py-1 rounded">سحب أرباح</span></td>
-                                      <td className="p-3">{s.networkName}</td>
-                                      <td className="p-3 text-rose-600">-{s.agentEarnings}</td>
-                                      <td className="p-3">-</td>
-                                      <td className="p-3 opacity-60" dir="ltr">{new Date(s.createdAt).toLocaleDateString()}</td>
+                                      <td className="px-3 py-2"><span className="text-amber-600 bg-amber-50 px-2 py-1 rounded">سحب أرباح</span></td>
+                                      <td className="px-3 py-2">{s.networkName}</td>
+                                      <td className="px-3 py-2 text-rose-600">-{s.agentEarnings}</td>
+                                      <td className="px-3 py-2">-</td>
+                                      <td className="px-3 py-2 opacity-60" dir="ltr">{new Date(s.createdAt).toLocaleDateString()}</td>
                                   </tr>
                               ))}
                           </tbody>
@@ -1687,7 +2080,7 @@ const AdminDashboard: React.FC<{ currentUser: User }> = ({ currentUser }) => {
           {/* UI CUSTOMIZATION SECTION - REMOVED IN FAVOR OF SETTINGS INTEGRATION */}
 
           {activeSection === 'settings' && (
-             <div className="max-w-2xl mx-auto space-y-6 animate-in slide-in-from-bottom-4">
+             <div className="w-full space-y-6 animate-in slide-in-from-bottom-4">
                 <SectionHeader title="إعدادات النظام والملف الشخصي" />
                 
                 {/* Admin Profile & Password */}
@@ -1750,6 +2143,93 @@ const AdminDashboard: React.FC<{ currentUser: User }> = ({ currentUser }) => {
                     <button onClick={handleSaveSettings} className="w-full py-3 bg-indigo-600 text-white rounded-xl font-bold text-xs shadow-lg hover:bg-indigo-700">حفظ الإعدادات والمظهر</button>
                 </div>
 
+                {/* Agent Tabs Visibility Settings */}
+                <div className="glass-card p-6 rounded-[2rem] border space-y-4">
+                    <h3 className="font-black text-sm border-b pb-2 flex items-center gap-2">📱 إعدادات ظهور التبويبات للوكلاء</h3>
+                    <p className="text-[10px] text-slate-500 font-bold">تحكم في التبويبات التي تظهر للوكلاء في لوحة التحكم الخاصة بهم:</p>
+                    <div className="space-y-3">
+                        <div className="flex justify-between items-center">
+                            <span className="font-bold text-xs">الإحصائيات الرئيسية</span>
+                            <ToggleSwitch 
+                                checked={systemSettings.agentVisibleTabs.stats} 
+                                onChange={() => setSystemSettings({
+                                    ...systemSettings,
+                                    agentVisibleTabs: { ...systemSettings.agentVisibleTabs, stats: !systemSettings.agentVisibleTabs.stats }
+                                })} 
+                            />
+                        </div>
+                        <div className="flex justify-between items-center">
+                            <span className="font-bold text-xs">إدارة الفئات</span>
+                            <ToggleSwitch 
+                                checked={systemSettings.agentVisibleTabs.categories} 
+                                onChange={() => setSystemSettings({
+                                    ...systemSettings,
+                                    agentVisibleTabs: { ...systemSettings.agentVisibleTabs, categories: !systemSettings.agentVisibleTabs.categories }
+                                })} 
+                            />
+                        </div>
+                        <div className="flex justify-between items-center">
+                            <span className="font-bold text-xs">الأرشيف</span>
+                            <ToggleSwitch 
+                                checked={systemSettings.agentVisibleTabs.archive} 
+                                onChange={() => setSystemSettings({
+                                    ...systemSettings,
+                                    agentVisibleTabs: { ...systemSettings.agentVisibleTabs, archive: !systemSettings.agentVisibleTabs.archive }
+                                })} 
+                            />
+                        </div>
+                        <div className="flex justify-between items-center">
+                            <span className="font-bold text-xs">المبيعات</span>
+                            <ToggleSwitch 
+                                checked={systemSettings.agentVisibleTabs.sales} 
+                                onChange={() => setSystemSettings({
+                                    ...systemSettings,
+                                    agentVisibleTabs: { ...systemSettings.agentVisibleTabs, sales: !systemSettings.agentVisibleTabs.sales }
+                                })} 
+                            />
+                        </div>
+                        <div className="flex justify-between items-center">
+                            <span className="font-bold text-xs">التسويات</span>
+                            <ToggleSwitch 
+                                checked={systemSettings.agentVisibleTabs.settlements} 
+                                onChange={() => setSystemSettings({
+                                    ...systemSettings,
+                                    agentVisibleTabs: { ...systemSettings.agentVisibleTabs, settlements: !systemSettings.agentVisibleTabs.settlements }
+                                })} 
+                            />
+                        </div>
+                        <div className="flex justify-between items-center">
+                            <span className="font-bold text-xs">وسائل التواصل</span>
+                            <ToggleSwitch 
+                                checked={systemSettings.agentVisibleTabs.contacts} 
+                                onChange={() => setSystemSettings({
+                                    ...systemSettings,
+                                    agentVisibleTabs: { ...systemSettings.agentVisibleTabs, contacts: !systemSettings.agentVisibleTabs.contacts }
+                                })} 
+                            />
+                        </div>
+                        <div className="flex justify-between items-center">
+                            <span className="font-bold text-xs">الإعدادات</span>
+                            <ToggleSwitch 
+                                checked={systemSettings.agentVisibleTabs.settings} 
+                                onChange={() => setSystemSettings({
+                                    ...systemSettings,
+                                    agentVisibleTabs: { ...systemSettings.agentVisibleTabs, settings: !systemSettings.agentVisibleTabs.settings }
+                                })} 
+                            />
+                        </div>
+                        <button 
+                            onClick={() => {
+                                StorageService.saveSystemSettings(systemSettings);
+                                showNotification('تم حفظ إعدادات ظهور التبويبات بنجاح', 'success');
+                            }} 
+                            className="w-full py-3 bg-indigo-600 text-white rounded-xl font-bold text-xs shadow-lg hover:bg-indigo-700 transition-all"
+                        >
+                            حفظ إعدادات التبويبات
+                        </button>
+                    </div>
+                </div>
+
                 {/* Support Settings */}
                 <div className="glass-card p-6 rounded-[2rem] border space-y-4">
                     <h3 className="font-black text-sm border-b pb-2 flex items-center gap-2">📞 إعدادات الدعم الفني</h3>
@@ -1767,19 +2247,6 @@ const AdminDashboard: React.FC<{ currentUser: User }> = ({ currentUser }) => {
                                 placeholder="مثال: 967700000000"
                             />
                         </div>
-                        <div>
-                            <label className="block text-[10px] font-bold text-slate-500 mb-1">البريد الإلكتروني</label>
-                            <input 
-                                type="email" 
-                                value={systemSettings.support?.email || ''} 
-                                onChange={(e) => setSystemSettings({
-                                    ...systemSettings,
-                                    support: { ...systemSettings.support!, email: e.target.value }
-                                })}
-                                className="w-full p-3 border rounded-xl text-xs font-bold outline-none focus:border-indigo-500 dark:bg-slate-900" 
-                                placeholder="support@domain.com"
-                            />
-                        </div>
                         <button 
                             onClick={() => {
                                 StorageService.saveSystemSettings(systemSettings);
@@ -1792,91 +2259,59 @@ const AdminDashboard: React.FC<{ currentUser: User }> = ({ currentUser }) => {
                     </div>
                 </div>
 
-                {/* قسم التحكم بأقسام الوكيل */}
                 <div className="glass-card p-6 rounded-[2rem] border space-y-4">
-                  <h3 className="font-black text-sm border-b pb-2 flex items-center gap-2">🛠️ تكوين أقسام الوكيل</h3>
-                  <div className="space-y-3">
-                    {systemSettings.agentTabs.tabs.map(tab => (
-                      <div key={tab.id} className="flex justify-between items-center p-3 bg-slate-50 dark:bg-white/5 rounded-xl border border-slate-100 dark:border-white/10">
-                        <div className="flex items-center gap-3">
-                          <span className="text-lg">{tab.icon}</span>
-                          <span className="font-bold text-xs">{tab.label}</span>
-                        </div>
-                        <ToggleSwitch 
-                          checked={tab.enabled} 
-                          onChange={() => {
-                            const newTabs = systemSettings.agentTabs.tabs.map(t => t.id === tab.id ? { ...t, enabled: !t.enabled } : t);
-                            const newSettings = { ...systemSettings, agentTabs: { tabs: newTabs } };
-                            setSystemSettings(newSettings);
-                            StorageService.saveSystemSettings(newSettings);
-                            showNotification('تم تحديث إعدادات أقسام الوكيل', 'success');
-                          }} 
-                        />
-                      </div>
-                    ))}
-                  </div>
-                </div>
-
-                {/* قسم تكوين أقسام المستخدم الديناميكية */}
-                <div className="glass-card p-6 rounded-[2rem] border space-y-4">
-                  <div className="flex justify-between items-center border-b pb-2">
-                    <h3 className="font-black text-sm flex items-center gap-2">📱 إدارة أقسام المستخدم القديمة</h3>
+                  <h3 className="font-black text-sm border-b pb-2 flex items-center gap-2">📊 مزامنة Google Sheets</h3>
+                  <p className="text-[10px] text-slate-500 font-bold">قم بمزامنة كافة بيانات النظام مع جداول Google Sheets للنسخ الاحتياطي والإحصائيات:</p>
+                  
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
                     <button 
-                      onClick={() => {
-                        setTabForm({ label: '', icon: '', contentType: 'text', content: '', enabled: true });
-                        setShowTabEditor({ isOpen: true });
+                      onClick={async () => {
+                        setIsSyncing(true);
+                        try {
+                          await StorageService.calculateAndPushStats();
+                          showNotification('تمت مزامنة الإحصائيات بنجاح', 'success');
+                          const stats = await googleSheetsService.getStats();
+                          setGoogleStats(stats);
+                        } catch (e) {
+                          showNotification('فشلت مزامنة الإحصائيات', 'error');
+                        }
+                        setIsSyncing(false);
                       }}
-                      className="px-3 py-1 bg-indigo-600 text-white rounded-lg text-[10px] font-black"
+                      disabled={isSyncing}
+                      className="p-3 bg-emerald-50 text-emerald-700 rounded-xl font-bold text-[10px] border border-emerald-200 hover:bg-emerald-100 transition-all flex items-center justify-center gap-2"
                     >
-                      + إضافة تبويب
+                      {isSyncing ? 'جاري المزامنة...' : '🔄 مزامنة الإحصائيات'}
+                    </button>
+                    
+                    <button 
+                      onClick={async () => {
+                        setIsSyncing(true);
+                        try {
+                          await googleSheetsService.syncData('users', users);
+                          await googleSheetsService.syncData('agents', users.filter(u => u.role === UserRole.AGENT));
+                          await googleSheetsService.syncData('categories', categories);
+                          await googleSheetsService.syncData('cards', allCards);
+                          await googleSheetsService.syncData('orders', orders);
+                          await googleSheetsService.syncData('points_requests', pointRequests);
+                          await googleSheetsService.syncData('settlements', settlements);
+                          showNotification('تمت المزامنة الكاملة للبيانات بنجاح', 'success');
+                        } catch (e) {
+                          showNotification('فشلت المزامنة الكاملة', 'error');
+                        }
+                        setIsSyncing(false);
+                      }}
+                      disabled={isSyncing}
+                      className="p-3 bg-indigo-50 text-indigo-700 rounded-xl font-bold text-[10px] border border-indigo-200 hover:bg-indigo-100 transition-all flex items-center justify-center gap-2"
+                    >
+                      {isSyncing ? 'جاري المزامنة...' : '☁️ مزامنة كاملة للبيانات'}
                     </button>
                   </div>
                   
-                  <div className="space-y-2">
-                    {systemSettings.userTabs.tabs.sort((a, b) => a.order - b.order).map((tab, idx, arr) => (
-                      <div key={tab.id} className="flex justify-between items-center p-3 bg-slate-50 dark:bg-white/5 rounded-xl border border-slate-100 dark:border-white/10 group">
-                        <div className="flex items-center gap-3">
-                          <div className="flex flex-col gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
-                            <button disabled={idx === 0} onClick={() => handleMoveTab(tab.id, 'up')} className="text-[10px] hover:text-indigo-600 disabled:opacity-20">▲</button>
-                            <button disabled={idx === arr.length - 1} onClick={() => handleMoveTab(tab.id, 'down')} className="text-[10px] hover:text-indigo-600 disabled:opacity-20">▼</button>
-                          </div>
-                          <span className="text-lg">{tab.icon}</span>
-                          <div>
-                            <p className="font-bold text-xs">{tab.label}</p>
-                            <p className="text-[8px] opacity-50 uppercase tracking-widest">{tab.contentType}</p>
-                          </div>
-                        </div>
-                        <div className="flex items-center gap-2">
-                          <ToggleSwitch 
-                            checked={tab.enabled} 
-                            onChange={() => {
-                              const newTabs = systemSettings.userTabs.tabs.map(t => t.id === tab.id ? { ...t, enabled: !t.enabled } : t);
-                              StorageService.updateUserTabs(newTabs);
-                              refreshData();
-                              showNotification('تم تحديث حالة التبويب', 'success');
-                            }} 
-                          />
-                          <button 
-                            onClick={() => {
-                              setTabForm(tab);
-                              setShowTabEditor({ isOpen: true, tab });
-                            }}
-                            className="p-1.5 hover:bg-indigo-50 text-indigo-600 rounded-lg transition-colors"
-                          >
-                            ✏️
-                          </button>
-                          {tab.contentType !== 'builtin' && (
-                            <button 
-                              onClick={() => handleDeleteTab(tab.id)}
-                              className="p-1.5 hover:bg-rose-50 text-rose-600 rounded-lg transition-colors"
-                            >
-                              🗑️
-                            </button>
-                          )}
-                        </div>
-                      </div>
-                    ))}
-                  </div>
+                  {googleStats && (
+                    <div className="p-3 bg-slate-50 dark:bg-white/5 rounded-xl border border-slate-100 dark:border-white/10">
+                      <p className="text-[9px] text-slate-400 font-bold">آخر تحديث من Google Sheets: {new Date().toLocaleString()}</p>
+                    </div>
+                  )}
                 </div>
 
                 {/* Data Management */}
@@ -1890,49 +2325,7 @@ const AdminDashboard: React.FC<{ currentUser: User }> = ({ currentUser }) => {
                         <p className="text-[9px] text-rose-400 mt-2 text-center">تحذير: هذا الإجراء سيحذف جميع المستخدمين والعمليات والبيانات نهائياً.</p>
                     </div>
                 </div>
-
-                {/* تخصيص واجهة المستخدم (Phase 1) */}
-                <div className="glass-card p-6 rounded-[2rem] border space-y-4 mt-6">
-                  <h3 className="font-black text-sm border-b pb-2 flex items-center gap-2">🎨 تخصيص واجهة المستخدم (JSON)</h3>
-                  <p className="text-[10px] text-slate-500 font-bold">قم بتعديل هيكل الأقسام الرئيسية والفرعية حسب الرغبة.</p>
-                  <textarea
-                    value={JSON.stringify(userLayout, null, 2)}
-                    onChange={(e) => {
-                      try {
-                        const newLayout = JSON.parse(e.target.value);
-                        setUserLayout(newLayout);
-                      } catch (error) {}
-                    }}
-                    rows={15}
-                    className="w-full p-3 font-mono text-[10px] bg-slate-50 dark:bg-slate-900 border rounded-xl outline-none focus:ring-2 focus:ring-indigo-500/50"
-                    dir="ltr"
-                  />
-                  <div className="flex gap-2">
-                    <button
-                      onClick={() => {
-                        StorageService.saveUserLayout(userLayout);
-                        showNotification('تم حفظ تخطيط لوحة المستخدم ✅', 'success');
-                      }}
-                      className="px-4 py-2 bg-indigo-600 text-white rounded-lg text-xs font-bold shadow-lg hover:bg-indigo-700 transition-all"
-                    >
-                      حفظ التخطيط
-                    </button>
-                    <button
-                      onClick={() => {
-                        if (window.confirm('هل أنت متأكد من إعادة تعيين التخطيط للافتراضي؟')) {
-                          const def = StorageService.getDefaultUserLayout();
-                          setUserLayout(def);
-                          StorageService.saveUserLayout(def);
-                          showNotification('تمت إعادة التعيين للافتراضي', 'info');
-                        }
-                      }}
-                      className="px-4 py-2 bg-slate-100 text-slate-600 rounded-lg text-xs font-bold hover:bg-slate-200 transition-all"
-                    >
-                      إعادة تعيين
-                    </button>
-                  </div>
-                </div>
-             </div>
+              </div>
           )}
 
       </main>
@@ -1953,125 +2346,6 @@ const AdminDashboard: React.FC<{ currentUser: User }> = ({ currentUser }) => {
                   </div>
               </div>
           </div>
-      )}
-
-      {/* Tab Editor Modal */}
-      {showTabEditor?.isOpen && (
-        <div className="fixed inset-0 z-[110] flex items-center justify-center bg-black/60 backdrop-blur-md p-4">
-          <div className="glass-card w-full max-w-lg rounded-[2rem] bg-white dark:bg-indigo-950 shadow-2xl animate-in zoom-in duration-200">
-            <div className="p-6 border-b flex justify-between items-center">
-              <h3 className="font-black text-lg">{showTabEditor.tab ? 'تعديل تبويب' : 'إضافة تبويب جديد'}</h3>
-              <button onClick={() => setShowTabEditor(null)} className="w-8 h-8 rounded-full bg-slate-100 flex items-center justify-center">✕</button>
-            </div>
-            <div className="p-6 space-y-4">
-              <div className="grid grid-cols-2 gap-4">
-                <div className="space-y-1">
-                  <label className="text-[10px] font-bold text-slate-500">اسم التبويب</label>
-                  <input 
-                    type="text" 
-                    value={tabForm.label} 
-                    onChange={e => setTabForm({...tabForm, label: e.target.value})} 
-                    className="w-full p-3 border rounded-xl text-xs font-bold outline-none focus:border-indigo-500 dark:bg-slate-900" 
-                    placeholder="مثلاً: عروض اليوم"
-                  />
-                </div>
-                <div className="space-y-1">
-                  <label className="text-[10px] font-bold text-slate-500">الأيقونة (Emoji)</label>
-                  <input 
-                    type="text" 
-                    value={tabForm.icon} 
-                    onChange={e => setTabForm({...tabForm, icon: e.target.value})} 
-                    className="w-full p-3 border rounded-xl text-xs font-bold outline-none focus:border-indigo-500 dark:bg-slate-900" 
-                    placeholder="🔥"
-                  />
-                </div>
-              </div>
-
-              <div className="space-y-1">
-                <label className="text-[10px] font-bold text-slate-500">نوع المحتوى</label>
-                <select 
-                  value={tabForm.contentType} 
-                  onChange={e => setTabForm({...tabForm, contentType: e.target.value as ContentType})}
-                  disabled={tabForm.contentType === 'builtin'}
-                  className="w-full p-3 border rounded-xl text-xs font-bold outline-none focus:border-indigo-500 dark:bg-slate-900"
-                >
-                  <option value="text">نص بسيط</option>
-                  <option value="html">HTML مخصص</option>
-                  <option value="table">جدول بيانات (JSON)</option>
-                  <option value="cards">بطاقات عرض (JSON)</option>
-                  <option value="stats">إحصائيات النظام</option>
-                  <option value="dashboard">لوحة المعلومات (الرئيسية)</option>
-                  <option value="user_wallet">محفظة المستخدم (الرصيد والشحن)</option>
-                  <option value="transactions_list">سجل العمليات (شراء + شحن)</option>
-                  <option value="purchased_cards">الكروت المشتراة (عرض ونسخ)</option>
-                  <option value="favorite_networks">الشبكات المفضلة</option>
-                  <option value="notifications">الإشعارات</option>
-                  <option value="support">الدعم الفني</option>
-                  <option value="reports">التقارير والرسوم البيانية</option>
-                  <option value="user_summary">ملخص المستخدم (قديم)</option>
-                  <option value="full_transactions">سجل العمليات الكامل (قديم)</option>
-                  <option value="purchases_only">عمليات الشراء فقط (قديم)</option>
-                  <option value="deposits_only">عمليات الشحن فقط (قديم)</option>
-                  <option value="networks_summary">الشبكات المشتراة (قديم)</option>
-                  <option value="recent_activities">آخر العمليات (قديم)</option>
-                  {tabForm.contentType === 'builtin' && <option value="builtin">وظيفة مدمجة</option>}
-                </select>
-              </div>
-
-              <div className="space-y-1">
-                <label className="text-[10px] font-bold text-slate-500">المحتوى</label>
-                {tabForm.contentType === 'text' && (
-                  <textarea 
-                    value={tabForm.content} 
-                    onChange={e => setTabForm({...tabForm, content: e.target.value})} 
-                    className="w-full p-3 border rounded-xl text-xs font-bold h-32 outline-none focus:border-indigo-500 dark:bg-slate-900" 
-                    placeholder="اكتب النص هنا..."
-                  />
-                )}
-                {tabForm.contentType === 'html' && (
-                  <textarea 
-                    value={tabForm.content} 
-                    onChange={e => setTabForm({...tabForm, content: e.target.value})} 
-                    className="w-full p-3 border rounded-xl text-xs font-mono h-32 outline-none focus:border-indigo-500 dark:bg-slate-900" 
-                    placeholder="<div class='p-4'>...</div>"
-                  />
-                )}
-                {(tabForm.contentType === 'table' || tabForm.contentType === 'cards' || tabForm.contentType === 'stats') && (
-                  <textarea 
-                    value={typeof tabForm.content === 'string' ? tabForm.content : JSON.stringify(tabForm.content, null, 2)} 
-                    onChange={e => {
-                      try {
-                        const val = JSON.parse(e.target.value);
-                        setTabForm({...tabForm, content: val});
-                      } catch (err) {
-                        setTabForm({...tabForm, content: e.target.value});
-                      }
-                    }} 
-                    className="w-full p-3 border rounded-xl text-xs font-mono h-32 outline-none focus:border-indigo-500 dark:bg-slate-900" 
-                    placeholder="{ ... }"
-                  />
-                )}
-                {tabForm.contentType === 'builtin' && (
-                  <div className="p-4 bg-slate-50 rounded-xl text-[10px] font-bold text-slate-500">
-                    هذا التبويب مرتبط بوظيفة مدمجة في النظام (مثل التسوق أو الإعدادات) ولا يمكن تعديل محتواه يدوياً.
-                  </div>
-                )}
-              </div>
-
-              <div className="flex justify-between items-center pt-2">
-                <span className="text-xs font-bold">تفعيل التبويب</span>
-                <ToggleSwitch checked={tabForm.enabled || false} onChange={() => setTabForm({...tabForm, enabled: !tabForm.enabled})} />
-              </div>
-
-              <button 
-                onClick={handleSaveTab}
-                className="w-full py-4 bg-indigo-600 text-white rounded-2xl font-black text-xs shadow-xl hover:bg-indigo-700 transition-all"
-              >
-                حفظ التبويب
-              </button>
-            </div>
-          </div>
-        </div>
       )}
 
       {/* Dynamic Confirm Modal (Approve/Reject/Edit) */}
@@ -2132,15 +2406,23 @@ const AdminDashboard: React.FC<{ currentUser: User }> = ({ currentUser }) => {
                     <input className="w-full p-3 border rounded-xl text-xs font-bold" placeholder="الاسم" value={userForm.fullName} onChange={e=>setUserForm({...userForm, fullName:e.target.value})} />
                 </div>
                 
-                <div className="space-y-2">
-                    <label className="text-[10px] font-bold text-slate-500 px-1">رقم الهاتف</label>
-                    <input className="w-full p-3 border rounded-xl text-xs font-bold" placeholder="رقم الهاتف" value={userForm.phone} onChange={e=>setUserForm({...userForm, phone:e.target.value})} />
+                <div className="grid grid-cols-2 gap-4">
+                    <div className="space-y-2">
+                        <label className="text-[10px] font-bold text-slate-500 px-1">رقم الهاتف</label>
+                        <input className="w-full p-3 border rounded-xl text-xs font-bold" placeholder="رقم الهاتف" value={userForm.phone} onChange={e=>setUserForm({...userForm, phone:e.target.value})} />
+                    </div>
+                    <div className="space-y-2">
+                        <label className="text-[10px] font-bold text-slate-500 px-1">البريد الإلكتروني</label>
+                        <input className="w-full p-3 border rounded-xl text-xs font-bold" placeholder="example@mail.com" value={userForm.email} onChange={e=>setUserForm({...userForm, email:e.target.value})} />
+                    </div>
                 </div>
 
-                <div className="space-y-2">
-                    <label className="text-[10px] font-bold text-slate-500 px-1">البريد الإلكتروني (اختياري)</label>
-                    <input className="w-full p-3 border rounded-xl text-xs font-bold" placeholder="البريد" value={userForm.email} onChange={e=>setUserForm({...userForm, email:e.target.value})} />
-                </div>
+                {userForm.role === UserRole.USER && (
+                    <div className="space-y-2">
+                        <label className="text-[10px] font-bold text-slate-500 px-1">الرصيد الحالي (نقطة)</label>
+                        <input type="number" className="w-full p-3 border rounded-xl text-xs font-bold bg-indigo-50 text-indigo-700" placeholder="0" value={userForm.pointsBalance} onChange={e=>setUserForm({...userForm, pointsBalance:parseFloat(e.target.value)})} />
+                    </div>
+                )}
                 
                 <div className="space-y-2">
                     <label className="text-[10px] font-bold text-slate-500 px-1">

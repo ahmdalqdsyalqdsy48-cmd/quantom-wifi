@@ -89,19 +89,21 @@ const Layout: React.FC<LayoutProps> = ({ children, user, onLogout }) => {
                     {user.role === UserRole.ADMIN ? 'إدارة عليا' : user.role === UserRole.AGENT ? 'مدير شبكة' : `${user.pointsBalance} نقطة`}
                   </span>
                 </div>
-                <button 
-                  onClick={onLogout}
-                  className="px-3 py-1 rounded-full border border-rose-500/20 text-rose-500 hover:bg-rose-500/10 transition-all text-[10px] font-bold"
-                >
-                  خروج
-                </button>
+                {user.role !== UserRole.USER && (
+                  <button 
+                    onClick={onLogout}
+                    className="px-3 py-1 rounded-full border border-rose-500/20 text-rose-500 hover:bg-rose-500/10 transition-all text-[10px] font-bold"
+                  >
+                    خروج
+                  </button>
+                )}
               </div>
             )}
           </div>
         </header>
 
         {/* Main Content */}
-        <main className="flex-1 p-4 max-w-7xl mx-auto w-full">
+        <main className="flex-1 w-full m-0 p-1">
           {children}
         </main>
 

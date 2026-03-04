@@ -1,6 +1,7 @@
 
-import React, { useState, useEffect } from 'react';
-import { Agent, Category, Card, CardStatus, Order, Status, SettlementReport, AgentBankDetails, AgentVisibleTabs, TabConfig } from '../types';
+import React, { useState, useEffect, useMemo } from 'react';
+import * as Icons from 'lucide-react';
+import { Agent, Category, Card, CardStatus, Order, Status, SettlementReport, AgentBankDetails, AgentVisibleTabs, TabConfig, AgentContact } from '../types';
 import { StorageService } from '../services/storage';
 import { useNotification } from '../components/Layout';
 // @ts-ignore
@@ -10,15 +11,21 @@ const AgentDashboard: React.FC<{ user: Agent }> = ({ user }) => {
   const { showNotification } = useNotification();
 
   // --- Core State ---
-  const [activeTab, setActiveTab] = useState<'stats' | 'categories' | 'archive' | 'sales' | 'settlements' | 'settings'>('stats');
+  const [activeTab, setActiveTab] = useState<'stats' | 'categories' | 'archive' | 'sales' | 'settlements' | 'settings' | 'contacts' | 'tickets'>('stats');
   const [isSidebarOpen, setIsSidebarOpen] = useState(true);
   
   const [data, setData] = useState({ 
     categories: [] as Category[], 
     orders: [] as Order[], 
     kroot: [] as Card[], 
-    reports: [] as SettlementReport[] 
+    reports: [] as SettlementReport[],
+    contacts: [] as AgentContact[],
+    tickets: [] as SupportTicket[]
   });
+
+  const [selectedTicket, setSelectedTicket] = useState<SupportTicket | null>(null);
+  const [replyMessage, setReplyMessage] = useState('');
+  const [agentEmail, setAgentEmail] = useState(user.email || '');
 
   // --- Modals State ---
   const [showAddCat, setShowAddCat] = useState(false);
@@ -34,8 +41,12 @@ const AgentDashboard: React.FC<{ user: Agent }> = ({ user }) => {
   const [showEditBank, setShowEditBank] = useState<AgentBankDetails | null>(null);
   const [selectedBankForSettlement, setSelectedBankForSettlement] = useState<string>('');
 
+  // Contact Management State
+  const [showAddContact, setShowAddContact] = useState(false);
+  const [showEditContact, setShowEditContact] = useState<AgentContact | null>(null);
+
   // --- Processing State ---
-  const [deleteTarget, setDeleteTarget] = useState<{ id: string, name: string, type: 'CATEGORY' | 'CARD' | 'ARCHIVED_CARD' | 'RESET_SALES' | 'RESET_CATS' | 'RESET_CATEGORY_CARDS' | 'RESET_ARCHIVE' | 'RESET_SETTLEMENTS' | 'BANK_ACCOUNT' } | null>(null);
+  const [deleteTarget, setDeleteTarget] = useState<{ id: string, name: string, type: 'CATEGORY' | 'CARD' | 'ARCHIVED_CARD' | 'RESET_SALES' | 'RESET_CATS' | 'RESET_CATEGORY_CARDS' | 'RESET_ARCHIVE' | 'RESET_SETTLEMENTS' | 'BANK_ACCOUNT' | 'CONTACT' } | null>(null);
   const [isProcessing, setIsProcessing] = useState(false);
   const [isGeneratingPDF, setIsGeneratingPDF] = useState(false);
 
@@ -54,6 +65,9 @@ const AgentDashboard: React.FC<{ user: Agent }> = ({ user }) => {
   // Bank Form
   const [bankForm, setBankForm] = useState({ bankName: '', accountNumber: '', accountHolder: '' });
   
+  // Contact Form
+  const [contactForm, setContactForm] = useState<{ type: 'whatsapp' | 'phone' | 'email', value: string }>({ type: 'whatsapp', value: '' });
+
   const [passwordForm, setPasswordForm] = useState({ new: '', confirm: '', pin: user.pin });
 
   // --- Initialization ---
@@ -61,12 +75,16 @@ const AgentDashboard: React.FC<{ user: Agent }> = ({ user }) => {
     try {
       const agentData = StorageService.getAgentData(user.id);
       const reports = StorageService.getSettlementReports().filter(r => r.agentId === user.id);
+      const agents = StorageService.getAgents();
+      const currentAgent = agents.find(a => a.id === user.id);
       
       setData({
         categories: agentData.categories || [],
         orders: agentData.orders || [],
         kroot: agentData.kroot || [], 
-        reports: reports || []
+        reports: reports || [],
+        contacts: currentAgent?.contacts || [],
+        tickets: StorageService.getSupportTickets(user.id, user.role)
       });
     } catch (e) {
       console.error("Refresh Error:", e);
@@ -79,7 +97,10 @@ const AgentDashboard: React.FC<{ user: Agent }> = ({ user }) => {
 
   useEffect(() => {
     const settings = StorageService.getSystemSettings();
-    const enabledTabs = settings.agentTabs.tabs.filter(t => t.enabled);
+    const enabledTabs = settings.agentTabs.tabs.filter(t => {
+      const isVisible = (settings.agentVisibleTabs as any)[t.id] !== false;
+      return t.enabled && isVisible;
+    });
     setTabsConfig(enabledTabs);
     
     // If current tab is disabled, move to first enabled one
@@ -103,6 +124,24 @@ const AgentDashboard: React.FC<{ user: Agent }> = ({ user }) => {
         availableBalance: totalEarnings - paid - pending
     };
   };
+
+  const filteredCategories = useMemo(() => {
+    if (!searchQuery) return data.categories;
+    const s = searchQuery.toLowerCase();
+    return data.categories.filter(c => 
+      c.name.toLowerCase().includes(s) || 
+      c.pointsPrice.toString().includes(s)
+    );
+  }, [data.categories, searchQuery]);
+
+  const filteredKroot = useMemo(() => {
+    if (!searchQuery) return data.kroot;
+    const s = searchQuery.toLowerCase();
+    return data.kroot.filter(k => 
+      k.cardNumber.toLowerCase().includes(s) ||
+      k.categoryName?.toLowerCase().includes(s)
+    );
+  }, [data.kroot, searchQuery]);
 
   const financials = calculateFinancials();
   
@@ -152,9 +191,19 @@ const AgentDashboard: React.FC<{ user: Agent }> = ({ user }) => {
         if (res.added > 0) {
             showNotification(`تم إضافة ${res.added} كرت بنجاح ✅`, 'success');
         }
+        
         if (res.duplicates.length > 0) {
-            showNotification(`${res.duplicates.length} كرت مكرر تم تجاهله ⚠️`, 'info');
+            const firstDup = res.duplicates[0];
+            const dupMsg = res.duplicates.length === 1 
+                ? `تم استبعاد الكود ${firstDup.code} لأنه موجود في فئة '${firstDup.category}'`
+                : `تم استبعاد ${res.duplicates.length} كروت مكررة ⚠️`;
+            showNotification(dupMsg, 'error');
+            
+            if (res.duplicates.length > 1) {
+                console.warn("Duplicate codes found:", res.duplicates);
+            }
         }
+        
         if (res.added === 0 && res.duplicates.length === 0) {
             showNotification('لم يتم إضافة أي كروت', 'info');
         }
@@ -238,6 +287,31 @@ const AgentDashboard: React.FC<{ user: Agent }> = ({ user }) => {
       showNotification(!currentStatus ? 'تم تفعيل الحساب البنكي' : 'تم تعطيل الحساب البنكي');
   };
 
+  // 5. Contact Management Handlers
+  const handleSaveContact = () => {
+      if (!contactForm.value) {
+          showNotification('يرجى إدخال قيمة وسيلة التواصل', 'error');
+          return;
+      }
+      if (showEditContact) {
+          StorageService.updateAgentContact(user.id, showEditContact.id, contactForm);
+          showNotification('تم تحديث وسيلة التواصل ✅', 'success');
+      } else {
+          StorageService.addAgentContact(user.id, contactForm);
+          showNotification('تم إضافة وسيلة التواصل ✅', 'success');
+      }
+      setContactForm({ type: 'whatsapp', value: '' });
+      setShowAddContact(false);
+      setShowEditContact(null);
+      refresh();
+  };
+
+  const handleToggleContact = (contactId: string) => {
+      StorageService.toggleAgentContact(user.id, contactId);
+      refresh();
+      showNotification('تم تحديث حالة وسيلة التواصل');
+  };
+
   const closeModals = () => {
     setShowAddCat(false);
     setShowEditCat(null);
@@ -253,6 +327,9 @@ const AgentDashboard: React.FC<{ user: Agent }> = ({ user }) => {
     setShowAddBank(false);
     setShowEditBank(null);
     setBankForm({ bankName: '', accountNumber: '', accountHolder: '' });
+    setShowAddContact(false);
+    setShowEditContact(null);
+    setContactForm({ type: 'whatsapp', value: '' });
     setShowPrintConfirm(false);
   };
 
@@ -366,6 +443,10 @@ const AgentDashboard: React.FC<{ user: Agent }> = ({ user }) => {
               StorageService.deleteAgentBankAccount(user.id, deleteTarget.id);
               showNotification('تم حذف الحساب البنكي 🗑️');
               break;
+          case 'CONTACT':
+              StorageService.deleteAgentContact(user.id, deleteTarget.id);
+              showNotification('تم حذف وسيلة التواصل 🗑️');
+              break;
           case 'CATEGORY':
               StorageService.deleteCategory(deleteTarget.id);
               showNotification('تم حذف الفئة والكروت المتاحة فقط (تم حفظ الأرشيف) ✅', 'success');
@@ -414,7 +495,7 @@ const AgentDashboard: React.FC<{ user: Agent }> = ({ user }) => {
                   <div className="w-8 h-8 bg-indigo-100 text-indigo-600 rounded-full flex items-center justify-center text-xs font-black">👤</div>
                   <div className="text-right overflow-hidden">
                       <p className="text-[10px] font-black truncate">{user.fullName}</p>
-                      <p className="text-[8px] text-slate-400 font-bold truncate">{user.email}</p>
+                      <p className="text-[8px] text-slate-400 font-bold truncate">{user.phone}</p>
                   </div>
               </div>
           </div>
@@ -439,7 +520,7 @@ const AgentDashboard: React.FC<{ user: Agent }> = ({ user }) => {
               {isSidebarOpen ? '→' : '←'}
           </button>
 
-      <div className="max-w-7xl mx-auto space-y-8">
+      <div className="w-full m-0 p-2 space-y-8">
       
       {/* Hidden Container for PDF Generation */}
       <div style={{ height: 0, overflow: 'hidden', position: 'absolute' }}>
@@ -574,6 +655,19 @@ const AgentDashboard: React.FC<{ user: Agent }> = ({ user }) => {
              <div className="space-y-6 animate-in slide-in-from-bottom-4">
                  <div className="flex flex-wrap gap-2 justify-between items-center">
                      <h3 className="font-black text-lg px-2">إدارة الفئات والمخزون</h3>
+                     
+                     <div className="flex-1 max-w-md relative group">
+                       <div className="absolute inset-y-0 right-0 pr-4 flex items-center pointer-events-none">
+                         <Icons.Search className="h-4 w-4 text-slate-400 group-focus-within:text-indigo-600 transition-colors" />
+                       </div>
+                       <input 
+                         type="text" 
+                         placeholder="بحث في الفئات أو الكروت..." 
+                         value={searchQuery}
+                         onChange={(e) => setSearchQuery(e.target.value)}
+                         className="w-full bg-white dark:bg-slate-900 border border-slate-200 dark:border-white/10 p-3 pr-11 rounded-2xl font-bold text-xs outline-none focus:ring-4 focus:ring-indigo-500/10 focus:border-indigo-500 transition-all shadow-sm"
+                       />
+                     </div>
                      <div className="flex gap-2">
                         {/* Updated Global Reset Button */}
                         <button onClick={() => setDeleteTarget({id: 'all', name: 'جميع الفئات', type: 'RESET_CATS'})} className="px-4 py-3 bg-rose-50 text-rose-600 rounded-[1.5rem] font-black text-[10px] hover:bg-rose-100 transition-colors">🗑️ تصفير الفئات</button>
@@ -581,7 +675,7 @@ const AgentDashboard: React.FC<{ user: Agent }> = ({ user }) => {
                      </div>
                  </div>
                  <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
-                     {data.categories.map(c => {
+                     {filteredCategories.map(c => {
                          const count = data.kroot.filter(k => k.categoryId === c.id && k.status === CardStatus.AVAILABLE).length;
                          return (
                              <div key={c.id} className={`glass-card p-6 rounded-[2.5rem] border transition-all ${!c.isActive ? 'opacity-60 grayscale' : 'hover:shadow-xl hover:-translate-y-1'}`}>
@@ -625,16 +719,16 @@ const AgentDashboard: React.FC<{ user: Agent }> = ({ user }) => {
                      </div>
                      <button onClick={() => setDeleteTarget({id: 'all', name: 'الأرشيف بالكامل', type: 'RESET_ARCHIVE'})} className="px-4 py-2 bg-rose-50 text-rose-600 rounded-xl text-[10px] font-black hover:bg-rose-100 transition-colors">🗑️ تصفير الأرشيف</button>
                  </div>
-                 <div className="overflow-x-auto">
-                    <table className="w-full text-right text-[10px]">
-                        <thead className="bg-slate-50 dark:bg-white/5 font-black text-slate-500">
+                 <div className="overflow-x-auto overflow-y-auto max-h-[400px] no-scrollbar">
+                    <table className="w-full text-right text-[10px] border-collapse">
+                        <thead className="bg-slate-50 dark:bg-white/5 font-black text-slate-500 sticky top-0 z-10">
                             <tr>
-                                <th className="p-4">الكود</th>
-                                <th className="p-4">الفئة</th>
-                                <th className="p-4">تاريخ الإضافة</th>
-                                <th className="p-4">تاريخ العملية</th>
-                                <th className="p-4">الحالة</th>
-                                <th className="p-4 text-center">إجراء</th>
+                                <th className="px-3 py-2">الكود</th>
+                                <th className="px-3 py-2">الفئة</th>
+                                <th className="px-3 py-2">تاريخ الإضافة</th>
+                                <th className="px-3 py-2">تاريخ العملية</th>
+                                <th className="px-3 py-2">الحالة</th>
+                                <th className="px-3 py-2 text-center">إجراء</th>
                             </tr>
                         </thead>
                         <tbody className="divide-y divide-slate-100 dark:divide-white/5 font-bold">
@@ -642,15 +736,15 @@ const AgentDashboard: React.FC<{ user: Agent }> = ({ user }) => {
                                 const cat = data.categories.find(c => c.id === k.categoryId);
                                 return (
                                     <tr key={k.id}>
-                                        <td className="p-4 font-mono text-indigo-600">
+                                        <td className="px-3 py-2 font-mono text-indigo-600">
                                             {revealedCards[k.id] ? StorageService.decryptCardCode(k.cardNumber) : '••••••••'}
                                             <button onClick={() => setRevealedCards({...revealedCards, [k.id]: !revealedCards[k.id]})} className="mr-2 opacity-50">👁️</button>
                                         </td>
-                                        <td className="p-4 opacity-70">{cat?.name || 'فئة محذوفة'}</td>
-                                        <td className="p-4 opacity-60" dir="ltr">{k.createdAt ? new Date(k.createdAt).toLocaleString('ar-YE') : '-'}</td>
-                                        <td className="p-4 opacity-60" dir="ltr">{k.soldAt ? new Date(k.soldAt).toLocaleString('ar-YE') : '-'}</td>
-                                        <td className="p-4"><span className={`px-2 py-1 rounded-md ${k.status === CardStatus.SOLD ? 'bg-amber-100 text-amber-700' : 'bg-slate-200 text-slate-600'}`}>{k.status === CardStatus.SOLD ? 'مباع' : 'مؤرشف'}</span></td>
-                                        <td className="p-4 flex justify-center gap-2">
+                                        <td className="px-3 py-2 opacity-70">{cat?.name || 'فئة محذوفة'}</td>
+                                        <td className="px-3 py-2 opacity-60" dir="ltr">{k.createdAt ? new Date(k.createdAt).toLocaleString('ar-YE') : '-'}</td>
+                                        <td className="px-3 py-2 opacity-60" dir="ltr">{k.soldAt ? new Date(k.soldAt).toLocaleString('ar-YE') : '-'}</td>
+                                        <td className="px-3 py-2"><span className={`px-2 py-1 rounded-md ${k.status === CardStatus.SOLD ? 'bg-amber-100 text-amber-700' : 'bg-slate-200 text-slate-600'}`}>{k.status === CardStatus.SOLD ? 'مباع' : 'مؤرشف'}</span></td>
+                                        <td className="px-3 py-2 flex justify-center gap-2">
                                             <button onClick={() => { navigator.clipboard.writeText(StorageService.decryptCardCode(k.cardNumber)); showNotification('تم النسخ'); }} className="p-2 bg-slate-100 rounded-lg hover:bg-slate-200">📋 نسخ</button>
                                             {k.status === CardStatus.ARCHIVED && (
                                                <>
@@ -711,46 +805,46 @@ const AgentDashboard: React.FC<{ user: Agent }> = ({ user }) => {
 
                  {/* Sales Table (Display Only) */}
                  <div className="glass-card rounded-[2.5rem] overflow-hidden border">
-                     <div className="overflow-x-auto">
-                        <table className="w-full text-right text-[10px]">
-                            <thead className="bg-slate-50 dark:bg-white/5 font-black text-slate-700 dark:text-slate-300">
+                     <div className="overflow-x-auto overflow-y-auto max-h-[400px] no-scrollbar">
+                        <table className="w-full text-right text-[10px] border-collapse">
+                            <thead className="bg-slate-50 dark:bg-white/5 font-black text-slate-700 dark:text-slate-300 sticky top-0 z-10">
                                 <tr>
-                                    <th className="p-4">#</th>
-                                    <th className="p-4">العميل</th>
-                                    <th className="p-4">الفئة</th>
-                                    <th className="p-4">رقم الكرت</th>
-                                    <th className="p-4">التاريخ والوقت</th>
-                                    <th className="p-4">سعر البيع</th>
-                                    <th className="p-4">العمولة</th>
-                                    <th className="p-4">ربح النظام</th>
-                                    <th className="p-4 bg-emerald-50/50 text-emerald-700">صافي الوكيل</th>
+                                    <th className="px-3 py-2">#</th>
+                                    <th className="px-3 py-2">العميل</th>
+                                    <th className="px-3 py-2">الفئة</th>
+                                    <th className="px-3 py-2">رقم الكرت</th>
+                                    <th className="px-3 py-2">التاريخ والوقت</th>
+                                    <th className="px-3 py-2">سعر البيع</th>
+                                    <th className="px-3 py-2">العمولة</th>
+                                    <th className="px-3 py-2">ربح النظام</th>
+                                    <th className="px-3 py-2 bg-emerald-50/50 text-emerald-700">صافي الوكيل</th>
                                 </tr>
                             </thead>
                             <tbody className="divide-y divide-slate-100 dark:divide-white/5 font-bold text-slate-600 dark:text-slate-400">
                                 {filteredOrders.map((o, idx) => (
                                     <tr key={o.id} className="hover:bg-slate-50 dark:hover:bg-white/5">
-                                        <td className="p-4">{idx + 1}</td>
-                                        <td className="p-4">{o.userName}</td>
-                                        <td className="p-4">{o.categoryName}</td>
-                                        <td className="p-4 font-mono text-indigo-600">
+                                        <td className="px-3 py-2">{idx + 1}</td>
+                                        <td className="px-3 py-2">{o.userName}</td>
+                                        <td className="px-3 py-2">{o.categoryName}</td>
+                                        <td className="px-3 py-2 font-mono text-indigo-600">
                                             {revealedCards[o.id] ? StorageService.decryptCardCode(o.cardNumber) : '••••••••'}
                                             <button onClick={() => setRevealedCards({...revealedCards, [o.id]: !revealedCards[o.id]})} className="mr-1 opacity-50 hover:opacity-100">👁️</button>
                                         </td>
-                                        <td className="p-4 opacity-70" dir="ltr">{new Date(o.createdAt).toLocaleString('ar-YE')}</td>
-                                        <td className="p-4">{o.pointsUsed}</td>
-                                        <td className="p-4">{user.profitPercentage}%</td>
-                                        <td className="p-4 text-rose-500">{o.masterProfit.toFixed(2)}</td>
-                                        <td className="p-4 text-emerald-600 bg-emerald-50/30 font-black">{o.agentEarnings.toFixed(2)}</td>
+                                        <td className="px-3 py-2 opacity-70" dir="ltr">{new Date(o.createdAt).toLocaleString('ar-YE')}</td>
+                                        <td className="px-3 py-2">{o.pointsUsed}</td>
+                                        <td className="px-3 py-2">{user.profitPercentage}%</td>
+                                        <td className="px-3 py-2 text-rose-500">{o.masterProfit.toFixed(2)}</td>
+                                        <td className="px-3 py-2 text-emerald-600 bg-emerald-50/30 font-black">{o.agentEarnings.toFixed(2)}</td>
                                     </tr>
                                 ))}
                             </tbody>
                             <tfoot className="bg-slate-100 dark:bg-white/10 font-black text-xs">
                                 <tr>
-                                    <td colSpan={5} className="p-4 text-center">الإجمالي الكلي</td>
-                                    <td className="p-4">{filteredOrders.reduce((a,b) => a + b.pointsUsed, 0)}</td>
-                                    <td className="p-4">-</td>
-                                    <td className="p-4 text-rose-600">{filteredOrders.reduce((a,b) => a + b.masterProfit, 0).toFixed(2)}</td>
-                                    <td className="p-4 text-emerald-600 bg-emerald-100/50">{filteredOrders.reduce((a,b) => a + b.agentEarnings, 0).toFixed(2)}</td>
+                                    <td colSpan={5} className="px-3 py-2 text-center">الإجمالي الكلي</td>
+                                    <td className="px-3 py-2">{filteredOrders.reduce((a,b) => a + b.pointsUsed, 0)}</td>
+                                    <td className="px-3 py-2">-</td>
+                                    <td className="px-3 py-2 text-rose-600">{filteredOrders.reduce((a,b) => a + b.masterProfit, 0).toFixed(2)}</td>
+                                    <td className="px-3 py-2 text-emerald-600 bg-emerald-100/50">{filteredOrders.reduce((a,b) => a + b.agentEarnings, 0).toFixed(2)}</td>
                                 </tr>
                             </tfoot>
                         </table>
@@ -781,20 +875,21 @@ const AgentDashboard: React.FC<{ user: Agent }> = ({ user }) => {
                         <h3 className="font-black text-slate-700 dark:text-slate-200">سجل طلبات التسوية</h3>
                         <button onClick={() => setDeleteTarget({id: 'all', name: 'سجل التسويات', type: 'RESET_SETTLEMENTS'})} className="px-4 py-2 bg-rose-50 text-rose-600 rounded-xl text-[10px] font-black hover:bg-rose-100 transition-colors">🗑️ تصفير السجل</button>
                      </div>
-                     <table className="w-full text-right text-[10px]">
-                         <thead className="bg-slate-50 dark:bg-white/5 font-black text-slate-500">
-                             <tr><th className="p-4">رقم الطلب</th><th className="p-4">التاريخ</th><th className="p-4">المبلغ</th><th className="p-4">معلومات البنك</th><th className="p-4">الحالة</th></tr>
-                         </thead>
-                         <tbody className="divide-y divide-slate-100 dark:divide-white/5 font-bold">
+                      <div className="overflow-x-auto overflow-y-auto max-h-[400px] no-scrollbar">
+                        <table className="w-full text-right text-[10px] border-collapse">
+                            <thead className="bg-slate-50 dark:bg-white/5 font-black text-slate-500 sticky top-0 z-10">
+                                <tr><th className="px-3 py-2">رقم الطلب</th><th className="px-3 py-2">التاريخ</th><th className="px-3 py-2">المبلغ</th><th className="px-3 py-2">معلومات البنك</th><th className="px-3 py-2">الحالة</th></tr>
+                            </thead>
+                            <tbody className="divide-y divide-slate-100 dark:divide-white/5 font-bold">
                              {data.reports.map(r => (
                                  <tr key={r.id} className="hover:bg-slate-50 dark:hover:bg-white/5">
-                                     <td className="p-4 font-mono text-indigo-600">{r.id}</td>
-                                     <td className="p-4">{new Date(r.createdAt).toLocaleDateString()}</td>
-                                     <td className="p-4 font-black text-base">{r.agentEarnings}</td>
-                                     <td className="p-4 opacity-70">
+                                     <td className="px-3 py-2 font-mono text-indigo-600">{r.id}</td>
+                                     <td className="px-3 py-2">{new Date(r.createdAt).toLocaleDateString()}</td>
+                                     <td className="px-3 py-2 font-black text-base">{r.agentEarnings}</td>
+                                     <td className="px-3 py-2 opacity-70">
                                          {r.bankDetails.bankName} - {r.bankDetails.accountNumber}
                                      </td>
-                                     <td className="p-4">
+                                     <td className="px-3 py-2">
                                          <div className="flex flex-col items-start gap-1">
                                              <span className={`px-2 py-1 rounded text-[9px] ${r.status === Status.PAID ? 'bg-emerald-100 text-emerald-600' : r.status === Status.REJECTED ? 'bg-rose-100 text-rose-600' : 'bg-amber-100 text-amber-600'}`}>
                                                 {r.status === Status.PAID ? 'تم التحويل' : r.status === Status.REJECTED ? 'مرفوض' : 'قيد الانتظار'}
@@ -810,9 +905,185 @@ const AgentDashboard: React.FC<{ user: Agent }> = ({ user }) => {
                      </table>
                  </div>
              </div>
+         </div>
          )}
 
-         {/* 6. SETTINGS & BANK (UPDATED FOR MULTIPLE ACCOUNTS) */}
+                   {/* 5.5 TICKETS */}
+          {activeTab === 'tickets' && (
+            <div className="space-y-6 animate-in slide-in-from-bottom-4">
+              <div className="flex justify-between items-center mb-6">
+                <div>
+                  <h2 className="text-2xl font-black">تذاكر الدعم الفني</h2>
+                  <p className="text-xs text-slate-400 font-bold">إدارة طلبات المساعدة من المستخدمين</p>
+                </div>
+              </div>
+
+              <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
+                <div className="lg:col-span-1 glass-card p-6 rounded-[2.5rem] border overflow-hidden">
+                  <div className="space-y-3 max-h-[600px] overflow-y-auto no-scrollbar">
+                    {data.tickets.map(ticket => (
+                      <div 
+                        key={ticket.id} 
+                        onClick={() => setSelectedTicket(ticket)}
+                        className={cn(
+                          "p-4 rounded-2xl border cursor-pointer transition-all",
+                          selectedTicket?.id === ticket.id ? "bg-indigo-50 border-indigo-200" : "bg-white dark:bg-white/5 hover:bg-slate-50 border-slate-100 dark:border-white/10"
+                        )}
+                      >
+                        <div className="flex justify-between items-start mb-2">
+                          <h4 className="font-black text-sm truncate flex-1">{ticket.title}</h4>
+                          <span className={cn(
+                            "px-2 py-0.5 rounded-full text-[8px] font-black",
+                            ticket.status === TicketStatus.OPEN ? "bg-indigo-100 text-indigo-600" :
+                            ticket.status === TicketStatus.IN_PROGRESS ? "bg-amber-100 text-amber-600" :
+                            "bg-slate-100 text-slate-500"
+                          )}>
+                            {ticket.status === TicketStatus.OPEN ? 'جديدة' :
+                             ticket.status === TicketStatus.IN_PROGRESS ? 'قيد المعالجة' : 'مغلقة'}
+                          </span>
+                        </div>
+                        <p className="text-[10px] text-slate-500 font-bold mb-1">{ticket.userName}</p>
+                        <p className="text-[9px] text-slate-400">{new Date(ticket.createdAt).toLocaleDateString('ar-YE')}</p>
+                      </div>
+                    ))}
+                    {data.tickets.length === 0 && (
+                      <div className="text-center py-20 opacity-20">
+                        <Icons.Ticket size={48} className="mx-auto mb-4" />
+                        <p className="font-black text-xs">لا توجد تذاكر حالياً</p>
+                      </div>
+                    )}
+                  </div>
+                </div>
+
+                <div className="lg:col-span-2 glass-card p-8 rounded-[2.5rem] border min-h-[400px]">
+                  {selectedTicket ? (
+                    <div className="flex flex-col h-full">
+                      <div className="flex justify-between items-start border-b dark:border-white/5 pb-6 mb-6">
+                        <div>
+                          <h3 className="text-xl font-black mb-2">{selectedTicket.title}</h3>
+                          <div className="flex items-center gap-4 text-xs text-slate-400 font-bold">
+                            <span>المستخدم: {selectedTicket.userName}</span>
+                            <span>الهاتف: {selectedTicket.userPhone}</span>
+                          </div>
+                        </div>
+                        <div className="flex gap-2">
+                          <select 
+                            value={selectedTicket.status}
+                            onChange={(e) => {
+                              StorageService.updateTicketStatus(selectedTicket.id, e.target.value as TicketStatus);
+                              showNotification('تم تحديث حالة التذكرة');
+                              refresh();
+                            }}
+                            className="bg-slate-50 dark:bg-white/5 border dark:border-white/10 rounded-xl px-3 py-1.5 text-[10px] font-black outline-none"
+                          >
+                            <option value={TicketStatus.OPEN}>مفتوحة</option>
+                            <option value={TicketStatus.IN_PROGRESS}>قيد المعالجة</option>
+                            <option value={TicketStatus.CLOSED}>مغلقة</option>
+                          </select>
+                        </div>
+                      </div>
+
+                      <div className="flex-1 space-y-6 mb-8 overflow-y-auto max-h-[400px] no-scrollbar">
+                        <div className="bg-slate-50 dark:bg-white/5 p-6 rounded-3xl">
+                          <p className="text-sm leading-relaxed">{selectedTicket.message}</p>
+                        </div>
+
+                        {selectedTicket.replies?.map((reply, idx) => (
+                          <div key={idx} className={cn("flex gap-3", reply.senderId === user.id ? "flex-row-reverse" : "")}>
+                            <div className="w-10 h-10 bg-slate-200 dark:bg-white/5 rounded-full flex items-center justify-center text-sm">👤</div>
+                            <div className={cn("max-w-[80%] p-4 rounded-3xl", reply.senderId === user.id ? "bg-indigo-600 text-white" : "bg-slate-100 dark:bg-white/10")}>
+                              <p className="text-[10px] font-black mb-1 opacity-70">{reply.senderName}</p>
+                              <p className="text-xs">{reply.message}</p>
+                              <p className="text-[8px] mt-2 opacity-50">{new Date(reply.createdAt).toLocaleTimeString('ar-YE')}</p>
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+
+                      <div className="mt-auto">
+                        <div className="flex gap-3">
+                          <textarea 
+                            value={replyMessage}
+                            onChange={e => setReplyMessage(e.target.value)}
+                            placeholder="اكتب ردك هنا..."
+                            className="flex-1 bg-slate-50 dark:bg-white/5 border dark:border-white/10 rounded-2xl p-4 text-xs font-bold outline-none focus:border-indigo-600 resize-none"
+                            rows={2}
+                          />
+                          <button 
+                            onClick={() => {
+                              if (!replyMessage) return;
+                              StorageService.addTicketReply(selectedTicket.id, {
+                                senderId: user.id,
+                                senderName: user.networkName,
+                                message: replyMessage
+                              });
+                              setReplyMessage('');
+                              showNotification('تم إرسال الرد ✅');
+                              refresh();
+                            }}
+                            className="px-6 bg-indigo-600 text-white rounded-2xl font-black text-xs hover:scale-105 transition-all"
+                          >
+                            إرسال
+                          </button>
+                        </div>
+                      </div>
+                    </div>
+                  ) : (
+                    <div className="h-full flex flex-col items-center justify-center opacity-20">
+                      <Icons.MessageSquare size={64} className="mb-4" />
+                      <p className="font-black">اختر تذكرة لعرض التفاصيل</p>
+                    </div>
+                  )}
+                </div>
+              </div>
+            </div>
+          )}
+
+          {/* 6. CONTACT SETTINGS */}
+          {activeTab === 'contacts' && (
+              <div className="space-y-6 animate-in slide-in-from-bottom-4">
+                  <div className="flex flex-wrap gap-2 justify-between items-center">
+                      <h3 className="font-black text-lg px-2">إدارة وسائل التواصل</h3>
+                      <button onClick={() => setShowAddContact(true)} className="px-6 py-3 bg-indigo-600 text-white rounded-[1.5rem] font-black text-xs shadow-lg hover:bg-indigo-700 transition-all active:scale-95">+ إضافة وسيلة تواصل</button>
+                  </div>
+
+                  <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
+                      {data.contacts.map(contact => (
+                          <div key={contact.id} className={`glass-card p-6 rounded-[2.5rem] border transition-all ${!contact.isActive ? 'opacity-60 grayscale' : 'hover:shadow-xl'}`}>
+                              <div className="flex justify-between items-start mb-4">
+                                  <div className="flex items-center gap-3">
+                                      <div className="w-12 h-12 bg-slate-100 dark:bg-white/5 rounded-full flex items-center justify-center text-2xl">
+                                          {contact.type === 'whatsapp' ? '💬' : contact.type === 'phone' ? '📞' : '✉️'}
+                                      </div>
+                                      <div>
+                                          <h4 className="font-black text-sm capitalize">{contact.type === 'whatsapp' ? 'واتساب' : contact.type === 'phone' ? 'هاتف' : 'بريد إلكتروني'}</h4>
+                                          <p className="text-[10px] font-bold text-slate-400">{contact.value}</p>
+                                      </div>
+                                  </div>
+                                  <button 
+                                      onClick={() => handleToggleContact(contact.id)} 
+                                      className={`w-10 h-6 rounded-full relative transition-colors ${contact.isActive ? 'bg-emerald-500' : 'bg-slate-300'}`}
+                                  >
+                                      <div className={`absolute top-1 w-4 h-4 bg-white rounded-full transition-all ${contact.isActive ? 'right-5' : 'right-1'}`} />
+                                  </button>
+                              </div>
+                              <div className="flex gap-2 pt-4 border-t dark:border-white/5">
+                                  <button onClick={() => { setContactForm({ type: contact.type, value: contact.value }); setShowEditContact(contact); setShowAddContact(true); }} className="flex-1 py-2 bg-indigo-50 text-indigo-600 rounded-xl text-[10px] font-black hover:bg-indigo-100">تعديل</button>
+                                  <button onClick={() => setDeleteTarget({ id: contact.id, name: contact.value, type: 'CONTACT' })} className="flex-1 py-2 bg-rose-50 text-rose-600 rounded-xl text-[10px] font-black hover:bg-rose-100">حذف</button>
+                              </div>
+                          </div>
+                      ))}
+                      {data.contacts.length === 0 && (
+                          <div className="col-span-full text-center py-16 text-slate-400 font-bold border-2 border-dashed rounded-[2rem]">
+                              لا توجد وسائل تواصل مضافة حالياً
+                          </div>
+                      )}
+                  </div>
+              </div>
+          )}
+
+          {/* 7. SETTINGS & BANK (UPDATED FOR MULTIPLE ACCOUNTS) */}
+
          {activeTab === 'settings' && (
              <div className="grid grid-cols-1 md:grid-cols-2 gap-6 animate-in slide-in-from-bottom-4">
                  {/* Bank Accounts List */}
@@ -896,6 +1167,43 @@ const AgentDashboard: React.FC<{ user: Agent }> = ({ user }) => {
                 <div className="flex gap-2 pt-2">
                     <button onClick={closeModals} className="flex-1 py-3 bg-slate-100 rounded-xl font-black text-xs">إلغاء</button>
                     <button onClick={handleSaveBank} className="flex-1 py-3 bg-indigo-600 text-white rounded-xl font-black text-xs shadow-lg">{showEditBank ? 'حفظ التعديلات' : 'إضافة الحساب'}</button>
+                </div>
+             </div>
+          </div>
+      )}
+
+      {/* Contact Modal (Add/Edit) */}
+      {showAddContact && (
+          <div className="fixed inset-0 z-[100] flex items-center justify-center p-4 bg-black/60 backdrop-blur-sm">
+             <div className="glass-card w-full max-w-sm p-8 rounded-[3rem] bg-white dark:bg-indigo-950 shadow-2xl space-y-4 animate-in zoom-in duration-300">
+                <h3 className="text-lg font-black text-indigo-600 text-center border-b pb-3">{showEditContact ? 'تعديل وسيلة التواصل' : 'إضافة وسيلة تواصل'}</h3>
+                <div className="space-y-4">
+                    <div>
+                        <label className="text-[9px] font-black text-slate-400 px-2">النوع</label>
+                        <select 
+                            value={contactForm.type} 
+                            onChange={e => setContactForm({...contactForm, type: e.target.value as any})} 
+                            className="w-full p-4 rounded-2xl bg-slate-50 dark:bg-slate-900 border text-xs font-bold outline-none"
+                        >
+                            <option value="whatsapp">واتساب</option>
+                            <option value="phone">هاتف</option>
+                            <option value="email">بريد إلكتروني</option>
+                        </select>
+                    </div>
+                    <div>
+                        <label className="text-[9px] font-black text-slate-400 px-2">القيمة (الرقم أو البريد)</label>
+                        <input 
+                            type="text" 
+                            placeholder={contactForm.type === 'email' ? 'example@mail.com' : '967777777777'} 
+                            value={contactForm.value} 
+                            onChange={e => setContactForm({...contactForm, value: e.target.value})} 
+                            className="w-full p-4 rounded-2xl bg-slate-50 dark:bg-slate-900 border text-xs font-bold outline-none" 
+                        />
+                    </div>
+                </div>
+                <div className="flex gap-2 pt-2">
+                    <button onClick={closeModals} className="flex-1 py-3 bg-slate-100 rounded-xl font-black text-xs">إلغاء</button>
+                    <button onClick={handleSaveContact} className="flex-1 py-3 bg-indigo-600 text-white rounded-xl font-black text-xs shadow-lg">{showEditContact ? 'حفظ التعديلات' : 'إضافة'}</button>
                 </div>
              </div>
           </div>
@@ -1003,8 +1311,8 @@ const AgentDashboard: React.FC<{ user: Agent }> = ({ user }) => {
                     <button onClick={() => setViewCardsCategory(null)} className="w-8 h-8 rounded-full bg-slate-100 flex items-center justify-center text-slate-500 hover:bg-rose-50 hover:text-rose-600 transition-colors">✕</button>
                 </div>
                 
-                <div className="flex-1 overflow-y-auto no-scrollbar pr-1">
-                    <table className="w-full text-right text-[10px]">
+                <div className="flex-1 overflow-y-auto overflow-x-auto max-h-[400px] no-scrollbar pr-1">
+                    <table className="w-full text-right text-[10px] border-collapse">
                         <thead className="sticky top-0 bg-white dark:bg-indigo-950 z-10 font-black text-slate-400 border-b">
                             <tr>
                                 <th className="py-3">الكود</th>
@@ -1014,7 +1322,7 @@ const AgentDashboard: React.FC<{ user: Agent }> = ({ user }) => {
                             </tr>
                         </thead>
                         <tbody className="divide-y divide-slate-100 dark:divide-white/5">
-                            {data.kroot.filter(k => k.categoryId === viewCardsCategory.id).map(k => (
+                            {filteredKroot.filter(k => k.categoryId === viewCardsCategory.id).map(k => (
                                 <tr key={k.id} className="hover:bg-slate-50 dark:hover:bg-white/5">
                                     <td className="py-3 font-mono text-indigo-600 font-bold">
                                         {revealedCards[k.id] ? StorageService.decryptCardCode(k.cardNumber) : '••••••••••••'}
