@@ -1,4 +1,5 @@
-import React, { useState, useEffect, useMemo } from 'react';
+          <div className="flex gap-3">
+            <button onClick={() => setActiveSection('topup')} className="flex-1 py-3 bg-white text-indigo-950 rounded-xl fontimport React, { useState, useEffect, useMemo } from 'react';
 import * as Icons from 'lucide-react';
 import { 
   Home, Wifi, Gift, CreditCard, PlusCircle, Send, 
@@ -199,8 +200,7 @@ const UserDashboard: React.FC<{ user: User; onUpdate: () => void }> = ({ user, o
           <div className="absolute top-0 right-0 p-6 opacity-10 text-9xl">💎</div>
           <p className="text-xs font-black opacity-70 mb-2 uppercase tracking-widest">الرصيد الأساسي</p>
           <div className="text-5xl font-black mb-6">{user.pointsBalance} <span className="text-sm opacity-60">نقطة</span></div>
-          <div className="flex gap-3">
-            <button onClick={() => setActiveSection('topup')} className="flex-1 py-3 bg-white text-indigo-950 rounded-xl font-black text-xs">شحن +</button>
+-black text-xs">شحن +</button>
             <button onClick={() => setActiveSection('points_store')} className="flex-1 py-3 bg-indigo-600 text-white rounded-xl font-black text-xs">متجر النقاط 🎁</button>
           </div>
         </div>
@@ -957,57 +957,7 @@ const UserDashboard: React.FC<{ user: User; onUpdate: () => void }> = ({ user, o
         </div>
       )}
     </div>
-    {/* قسم الإشعارات الجديد */}
-    <div className="mt-6 bg-white rounded-xl shadow-sm border border-gray-100 overflow-hidden">
-      <div className="p-4 bg-gray-50 border-b border-gray-100 flex justify-between items-center">
-          <h3 className="font-bold text-gray-800 flex items-center gap-2">
-                <span className="text-blue-500">🔔</span> الإشعارات الأخيرة
-                    </h3>
-                        <span className="bg-blue-100 text-blue-600 text-xs px-2 py-1 rounded-full font-medium">
-                              3 جديدة
-                                  </span>
-                                    </div>
-
-                                      <div className="divide-y divide-gray-50">
-                                          {/* إشعار 1 */}
-                                              <div className="p-4 hover:bg-blue-50 transition-colors cursor-pointer">
-                                                    <div className="flex gap-3">
-                                                            <div className="w-2 h-2 mt-2 bg-blue-500 rounded-full shadow-[0_0_8px_rgba(59,130,246,0.5)]"></div>
-                                                                    <div>
-                                                                              <p className="text-sm text-gray-800 font-medium">تم تحديث باقة الإنترنت الخاصة بك بنجاح.</p>
-                                                                                        <p className="text-xs text-gray-400 mt-1">منذ 5 دقائق</p>
-                                                                                                </div>
-                                                                                                      </div>
-                                                                                                          </div>
-
-                                                                                                              {/* إشعار 2 */}
-                                                                                                                  <div className="p-4 hover:bg-blue-50 transition-colors cursor-pointer">
-                                                                                                                        <div className="flex gap-3">
-                                                                                                                                <div className="w-2 h-2 mt-2 bg-blue-500 rounded-full"></div>
-                                                                                                                                        <div>
-                                                                                                                                                  <p className="text-sm text-gray-800 font-medium">لقد حصلت على 50 نقطة مكافأة جديدة!</p>
-                                                                                                                                                            <p className="text-xs text-gray-400 mt-1">منذ ساعتين</p>
-                                                                                                                                                                    </div>
-                                                                                                                                                                          </div>
-                                                                                                                                                                              </div>
-
-                                                                                                                                                                                  {/* إشعار 3 */}
-                                                                                                                                                                                      <div className="p-4 bg-gray-50/50">
-                                                                                                                                                                                            <div className="flex gap-3 opacity-60">
-                                                                                                                                                                                                    <div className="w-2 h-2 mt-2 bg-gray-300 rounded-full"></div>
-                                                                                                                                                                                                            <div>
-                                                                                                                                                                                                                      <p className="text-sm text-gray-700">مرحباً بك في لوحة تحكم كوانتوم واي فاي.</p>
-                                                                                                                                                                                                                                <p className="text-xs text-gray-400 mt-1">أمس في 10:30 م</p>
-                                                                                                                                                                                                                                        </div>
-                                                                                                                                                                                                                                              </div>
-                                                                                                                                                                                                                                                  </div>
-                                                                                                                                                                                                                                                    </div>
-
-                                                                                                                                                                                                                                                      <button className="w-full py-3 text-sm text-blue-600 font-medium hover:bg-blue-50 border-t border-gray-100 transition-all">
-                                                                                                                                                                                                                                                          عرض كافة الإشعارات
-                                                                                                                                                                                                                                                            </button>
-                                                                                                                                                                                                                                                            </div>
-                                                                                                                                                                                                                                                            
+        </div>
   );
 };
 
